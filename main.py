@@ -6,7 +6,7 @@ from database import supabase
 
 app = FastAPI(
     title="Gestionale Divise API",
-    description="Backend multi-canale per la gestione ordini e magazzino - divisedivise.it",
+    description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
     version="1.0.0"
 )
 
@@ -45,7 +45,6 @@ def get_products():
         batch_size = 1000
         start = 0
         
-        # Ciclo di paginazione per superare il limite di 1000 righe per singola query imposto da Supabase
         while True:
             response = supabase.schema("gestionale_divise").table("articoli").select("*").range(start, start + batch_size - 1).execute()
             rows = response.data if response.data else []
@@ -64,6 +63,31 @@ def get_products():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/customers")
+def get_customers():
+    try:
+        all_customers = []
+        batch_size = 1000
+        start = 0
+        
+        while True:
+            response = supabase.schema("gestionale_divise").table("clienti").select("*").range(start, start + batch_size - 1).execute()
+            rows = response.data if response.data else []
+            
+            if not rows:
+                break
+                
+            all_customers.extend(rows)
+            
+            if len(rows) < batch_size:
+                break
+                
+            start += batch_size
+            
+        return all_customers
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/magazzino/carico-deposito")
 def carico_deposito(payload_data: Dict[str, Any]):
     try:
@@ -73,7 +97,6 @@ def carico_deposito(payload_data: Dict[str, Any]):
         if not articolo_id or quantita <= 0:
             raise HTTPException(status_code=400, detail="ID articolo mancante o quantità di carico non valida.")
 
-        # 1. Recuperiamo la giacenza attuale del deposito
         resp = supabase.schema("gestionale_divise").table("articoli").select("giacenza_deposito").eq("id", articolo_id).execute()
         
         if not resp.data:
@@ -82,7 +105,6 @@ def carico_deposito(payload_data: Dict[str, Any]):
         deposito_attuale = int(resp.data[0].get("giacenza_deposito", 0))
         nuovo_deposito = deposito_attuale + quantita
 
-        # 2. Aggiorniamo il record su Supabase
         supabase.schema("gestionale_divise").table("articoli").update({
             "giacenza_deposito": nuovo_deposito
         }).eq("id", articolo_id).execute()
@@ -103,7 +125,7 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
     try:
         articolo_id = payload_data.get("articolo_id")
         quantita = int(payload_data.get("quantita", 0))
-        direzione = payload_data.get("direzione") # "dep_to_neg" (da Deposito a Negozio) oppure "neg_to_dep" (da Negozio a Deposito)
+        direzione = payload_data.get("direzione")
 
         if not articolo_id or quantita <= 0:
             raise HTTPException(status_code=400, detail="ID articolo mancante o quantità non valida.")
@@ -111,7 +133,6 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
         if direzione not in ["dep_to_neg", "neg_to_dep"]:
             raise HTTPException(status_code=400, detail="Direzione di trasferimento non valida.")
 
-        # 1. Recuperiamo lo stato attuale dell'articolo
         resp = supabase.schema("gestionale_divise").table("articoli").select("giacenza_deposito, giacenza_negozio").eq("id", articolo_id).execute()
         
         if not resp.data:
@@ -121,7 +142,6 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
         deposito_attuale = int(articolo.get("giacenza_deposito", 0))
         negozio_attuale = int(articolo.get("giacenza_negozio", 0))
 
-        # 2. Verifichiamo la disponibilità e calcoliamo i nuovi valori
         if direzione == "dep_to_neg":
             if deposito_attuale < quantita:
                 raise HTTPException(status_code=400, detail=f"Giacenza insufficiente in Deposito! Disponibili: {deposito_attuale}")
@@ -133,7 +153,6 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
             nuovo_deposito = deposito_attuale + quantita
             nuovo_negozio = negozio_attuale - quantita
 
-        # 3. Aggiorniamo il record su Supabase
         supabase.schema("gestionale_divise").table("articoli").update({
             "giacenza_deposito": nuovo_deposito,
             "giacenza_negozio": nuovo_negozio
@@ -151,15 +170,14 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/sync-shopify")
-def sync_shopify_products(payload_data: Dict[str, Any]):
+@app.post("/api/sync-shopify-customers")
+def sync_shopify_customers(payload_data: Dict[str, Any]):
     try:
         azienda_id = payload_data.get("azienda_id", 1)
 
         if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
-            raise HTTPException(status_code=500, detail="Credenziali Shopify (SHOP_URL, Client ID o Client Secret) mancanti nelle variabili d'ambiente di Render.")
+            raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti nelle variabili d'ambiente di Render.")
 
-        # 1. Ottenimento del token di accesso tramite Client Credentials / Custom App Auth
         auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
         auth_payload = {
             "client_id": SHOPIFY_CLIENT_ID,
@@ -171,13 +189,119 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
         if auth_response.status_code != 200:
             raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
 
-        token_data = auth_response.json()
-        access_token = token_data.get("access_token")
-
+        access_token = auth_response.json().get("access_token")
         if not access_token:
-            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token dalla risposta di Shopify.")
+            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
 
-        # 2. Interrogazione dei prodotti con paginazione
+        url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/customers.json?limit=250"
+        headers = {
+            "X-Shopify-Access-Token": access_token,
+            "Content-Type": "application/json"
+        }
+
+        all_records = []
+        active_customer_ids = []
+        sincronizzati = 0
+
+        while url:
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=f"Errore chiamata clienti Shopify: {response.text}")
+            
+            data = response.json()
+            customers = data.get("customers", [])
+
+            if not customers:
+                break
+
+            for cust in customers:
+                cust_id = cust.get("id")
+                active_customer_ids.append(cust_id)
+                
+                nome = cust.get("first_name", "")
+                cognome = cust.get("last_name", "")
+                email = cust.get("email", "")
+                telefono = cust.get("phone", "")
+                
+                addresses = cust.get("addresses", [])
+                default_address = next((addr for addr in addresses if addr.get("default")), addresses[0] if addresses else {})
+                
+                ragione_sociale = default_address.get("company", "")
+                indirizzo_1 = default_address.get("address1", "")
+                indirizzo_2 = default_address.get("address2", "")
+                indirizzo_completo = f"{indirizzo_1} {indirizzo_2}".strip()
+                
+                citta = default_address.get("city", "")
+                cap = default_address.get("zip", "")
+                provincia = default_address.get("province_code", "")
+
+                record = {
+                    "azienda_id": azienda_id,
+                    "shopify_customer_id": cust_id,
+                    "ragione_sociale": ragione_sociale if ragione_sociale else None,
+                    "nome": nome if nome else None,
+                    "cognome": cognome if cognome else None,
+                    "email": email if email else None,
+                    "telefono": telefono if telefono else None,
+                    "indirizzo": indirizzo_completo if indirizzo_completo else None,
+                    "citta": citta if citta else None,
+                    "cap": cap if cap else None,
+                    "provincia": provincia if provincia else None
+                }
+
+                all_records.append(record)
+
+                if len(all_records) >= 1000:
+                    dedup_dict = {r["shopify_customer_id"]: r for r in all_records}
+                    batch_dedup = list(dedup_dict.values())
+                    supabase.schema("gestionale_divise").table("clienti").upsert(batch_dedup, on_conflict="shopify_customer_id").execute()
+                    sincronizzati += len(batch_dedup)
+                    all_records = []
+
+            link_header = response.headers.get("Link", "")
+            url = None
+            if 'rel="next"' in link_header:
+                for part in link_header.split(","):
+                    if 'rel="next"' in part:
+                        url = part.split(";")[0].strip().strip("<>")
+
+        if all_records:
+            dedup_dict = {r["shopify_customer_id"]: r for r in all_records}
+            batch_dedup = list(dedup_dict.values())
+            supabase.schema("gestionale_divise").table("clienti").upsert(batch_dedup, on_conflict="shopify_customer_id").execute()
+            sincronizzati += len(batch_dedup)
+
+        return {
+            "status": "success",
+            "message": f"Sincronizzazione clienti completata! Sincronizzati: {sincronizzati}",
+            "total_synced": sincronizzati
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/sync-shopify")
+def sync_shopify_products(payload_data: Dict[str, Any]):
+    try:
+        azienda_id = payload_data.get("azienda_id", 1)
+
+        if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+            raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti.")
+
+        auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
+        auth_payload = {
+            "client_id": SHOPIFY_CLIENT_ID,
+            "client_secret": SHOPIFY_CLIENT_SECRET,
+            "grant_type": "client_credentials"
+        }
+        
+        auth_response = requests.post(auth_url, json=auth_payload, timeout=30)
+        if auth_response.status_code != 200:
+            raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
+
+        access_token = auth_response.json().get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
+
         url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/products.json?limit=250"
         headers = {
             "X-Shopify-Access-Token": access_token,
@@ -205,7 +329,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                 variants = item.get("variants", [])
                 options = item.get("options", [])
 
-                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore, Manica)
                 option_map = {}
                 for opt in options:
                     pos = opt.get("position")
@@ -243,7 +366,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                         else:
                             dettaglio_extra.append(val)
 
-                    # Componiamo il nome descrittivo della variante includendo eventuali opzioni extra (es. Manica Lunga/Corta)
                     suffix_extra = " / ".join(dettaglio_extra)
                     if variant.get('title') and variant.get('title') != "Default Title":
                         variant_title_part = variant.get('title')
@@ -264,7 +386,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                     all_records.append(record)
 
-                    # Invio in batch da 1000 elementi basato su shopify_variant_id come chiave univoca
                     if len(all_records) >= 1000:
                         dedup_dict = {r["shopify_variant_id"]: r for r in all_records}
                         batch_dedup = list(dedup_dict.values())
@@ -273,16 +394,13 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                         sincronizzati += len(batch_dedup)
                         all_records = []
 
-            # Gestione Link Header per la paginazione successiva di Shopify
             link_header = response.headers.get("Link", "")
             url = None
             if 'rel="next"' in link_header:
-                parts = link_header.split(",")
-                for part in parts:
+                for part in link_header.split(","):
                     if 'rel="next"' in part:
                         url = part.split(";")[0].strip().strip("<>")
 
-        # Invio degli eventuali record rimanenti inferiori a 1000
         if all_records:
             dedup_dict = {r["shopify_variant_id"]: r for r in all_records}
             batch_dedup = list(dedup_dict.values())
@@ -290,7 +408,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
             supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="shopify_variant_id").execute()
             sincronizzati += len(batch_dedup)
 
-        # 3. Pulizia automatica sicura a blocchi (evita il limite URL too long)
         deleted_count = 0
         if active_variant_ids:
             db_variants_resp = supabase.schema("gestionale_divise").table("articoli").select("shopify_variant_id").eq("azienda_id", azienda_id).execute()
@@ -308,7 +425,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
         return {
             "status": "success",
-            "message": f"Sincronizzazione completata! Aggiornati/Inseriti: {sincronizzati}, Rimossi dal DB: {deleted_count}",
+            "message": f"Sincronizzazione prodotti completata! Aggiornati/Inseriti: {sincronizzati}, Rimossi dal DB: {deleted_count}",
             "total_synced": sincronizzati,
             "total_deleted": deleted_count
         }
