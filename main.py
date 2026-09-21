@@ -41,7 +41,8 @@ def get_azienda(azienda_id: int):
 @app.get("/api/products")
 def get_products():
     try:
-        response = supabase.schema("gestionale_divise").table("articoli").select("*").execute()
+        # Range esteso fino a 10000 record per superare il limite predefinito di 1000 righe di Supabase
+        response = supabase.schema("gestionale_divise").table("articoli").select("*").range(0, 9999).execute()
         return response.data if response.data else []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -148,7 +149,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                     # Invio in batch da 1000 elementi
                     if len(all_records) >= 1000:
-                        # Deduplicazione per SKU all'interno del batch per evitare conflitti PostgreSQL (21000)
                         dedup_dict = {r["sku"]: r for r in all_records}
                         batch_dedup = list(dedup_dict.values())
 
