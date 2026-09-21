@@ -148,8 +148,12 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                     # Invio in batch da 1000 elementi
                     if len(all_records) >= 1000:
-                        supabase.schema("gestionale_divise").table("articoli").upsert(all_records, on_conflict="sku").execute()
-                        sincronizzati += len(all_records)
+                        # Deduplicazione per SKU all'interno del batch per evitare conflitti PostgreSQL (21000)
+                        dedup_dict = {r["sku"]: r for r in all_records}
+                        batch_dedup = list(dedup_dict.values())
+
+                        supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="sku").execute()
+                        sincronizzati += len(batch_dedup)
                         all_records = []
 
             # Gestione Link Header per la paginazione successiva
@@ -163,8 +167,11 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
         # Invio degli eventuali record rimanenti inferiori a 1000
         if all_records:
-            supabase.schema("gestionale_divise").table("articoli").upsert(all_records, on_conflict="sku").execute()
-            sincronizzati += len(all_records)
+            dedup_dict = {r["sku"]: r for r in all_records}
+            batch_dedup = list(dedup_dict.values())
+
+            supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="sku").execute()
+            sincronizzati += len(batch_dedup)
 
         return {
             "status": "success",
