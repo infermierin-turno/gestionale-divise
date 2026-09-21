@@ -62,7 +62,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
             "grant_type": "client_credentials"
         }
         
-        auth_response = requests.post(auth_url, json=auth_payload)
+        auth_response = requests.post(auth_url, json=auth_payload, timeout=30)
         if auth_response.status_code != 200:
             raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
 
@@ -79,10 +79,11 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
             "Content-Type": "application/json"
         }
 
+        all_records = []
         sincronizzati = 0
 
         while url:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=30)
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail=f"Errore chiamata prodotti Shopify: {response.text}")
             
@@ -98,10 +99,10 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                 variants = item.get("variants", [])
                 options = item.get("options", [])
 
-                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore, Manica)
+                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore)
                 option_map = {}
                 for opt in options:
-                    pos = opt.get("position") # 1, 2, o 3
+                    pos = opt.get("position")
                     name = opt.get("name", "").strip().lower()
                     if pos:
                         option_map[pos] = name
@@ -118,7 +119,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                     taglia = None
                     colore = None
 
-                    # Associazione intelligente basata sul nome effettivo dell'opzione Shopify
                     opt_names = [option_map.get(1, ""), option_map.get(2, ""), option_map.get(3, "")]
                     opt_vals = [val1, val2, val3]
 
@@ -131,7 +131,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                             taglia = val
                         elif any(k in name_lower for k in ["colore", "color"]):
                             colore = val
-                        # Se il campo si chiama manica o altro, lo gestiamo correttamente o lo ignoriamo se serve solo il colore
 
                     record = {
                         "azienda_id": azienda_id,
@@ -145,12 +144,13 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                         "aliquota_iva": 22.00
                     }
 
-                    if record["sku"]:
-                        supabase.schema("gestionale_divise").table("articoli").upsert(record, on_conflict="sku").execute()
-                    else:
-                        supabase.schema("gestionale_divise").table("articoli").insert(record).execute()
-                        
-                    sincronizzati += 1
+                    all_records.append(record)
+
+                    # Invio in batch da 1000 elementi
+                    if len(all_records) >= 1000:
+                        supabase.schema("gestionale_divise").table("articoli").upsert(all_records, on_conflict="sku").execute()
+                        sincronizzati += len(all_records)
+                        all_records = []
 
             # Gestione Link Header per la paginazione successiva
             link_header = response.headers.get("Link", "")
@@ -161,9 +161,14 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                     if 'rel="next"' in part:
                         url = part.split(";")[0].strip().strip("<>")
 
+        # Invio degli eventuali record rimanenti inferiori a 1000
+        if all_records:
+            supabase.schema("gestionale_divise").table("articoli").upsert(all_records, on_conflict="sku").execute()
+            sincronizzati += len(all_records)
+
         return {
             "status": "success",
-            "message": f"Sincronizzazione completata con successo! Totale articoli sincronizzati: {sincronizzati}",
+            "message": f"Sincronizzazione completata con successo! Totale articoli sincronizzati in batch: {sincronizzati}",
             "total_synced": sincronizzati
         }
     except Exception as e:
