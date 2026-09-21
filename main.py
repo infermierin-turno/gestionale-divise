@@ -203,21 +203,25 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
             supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="shopify_variant_id").execute()
             sincronizzati += len(batch_dedup)
 
-        # 3. Pulizia automatica: rimuoviamo dal database locale gli articoli/varianti non più presenti su Shopify
+        # 3. Pulizia automatica sicura a blocchi (evita il limite URL too long)
         deleted_count = 0
         if active_variant_ids:
-            # Per evitare problemi con query troppo lunghe in un colpo solo, eseguiamo la pulizia a blocchi se necessario o via not-in
-            # Nota: Supabase permette di filtrare con .not_.in_("shopify_variant_id", active_variant_ids)
-            # Per sicurezza gestiamo eventuali liste grandi dividendole o passandole direttamente se supportato.
-            # Qui eseguiamo la cancellazione dei record che NON sono presenti nell'array attivo di Shopify
-            delete_response = supabase.schema("gestionale_divise").table("articoli").delete().not_.in_("shopify_variant_id", active_variant_ids).eq("azienda_id", azienda_id).execute()
-            # Se la risposta restituisce i dati eliminati, possiamo contarli
-            if delete_response.data:
-                deleted_count = len(delete_response.data)
+            db_variants_resp = supabase.schema("gestionale_divise").table("articoli").select("shopify_variant_id").eq("azienda_id", azienda_id).execute()
+            db_variant_ids = [row["shopify_variant_id"] for row in db_variants_resp.data] if db_variants_resp.data else []
+            
+            ids_to_delete = [vid for vid in db_variant_ids if vid not in active_variant_ids]
+            
+            if ids_to_delete:
+                chunk_size = 200
+                for i in range(0, len(ids_to_delete), chunk_size):
+                    chunk_del = ids_to_delete[i:i + chunk_size]
+                    del_resp = supabase.schema("gestionale_divise").table("articoli").delete().in_("shopify_variant_id", chunk_del).execute()
+                    if del_resp.data:
+                        deleted_count += len(del_resp.data)
 
         return {
             "status": "success",
-            "message": f"Sincronizzazione completata! Aggiornati/Inseriti: {sincronizzati}, Rimossi dal DB (perché cancellati su Shopify): {deleted_count}",
+            "message": f"Sincronizzazione completata! Aggiornati/Inseriti: {sincronizzati}, Rimossi dal DB: {deleted_count}",
             "total_synced": sincronizzati,
             "total_deleted": deleted_count
         }
