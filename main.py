@@ -10,8 +10,8 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Lettura delle credenziali dell'app Shopify dalle variabili d'ambiente di Render
-SHOPIFY_SHOP = os.getenv("SHOPIFY_SHOP")
+# Lettura delle credenziali usando esattamente i nomi presenti su Render (SHOP_URL)
+SHOPIFY_SHOP = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP")
 SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
@@ -39,9 +39,7 @@ def get_azienda(azienda_id: int):
 @app.get("/api/products")
 def get_products():
     try:
-        # Interroga la tabella 'articoli' nello schema personalizzato 'gestionale_divise'
         response = supabase.schema("gestionale_divise").table("articoli").select("*").execute()
-        
         return response.data if response.data else []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -52,7 +50,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
         azienda_id = payload_data.get("azienda_id", 1)
 
         if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
-            raise HTTPException(status_code=500, detail="Credenziali Shopify (Shop, Client ID o Client Secret) mancanti nelle variabili d'ambiente di Render.")
+            raise HTTPException(status_code=500, detail="Credenziali Shopify (SHOP_URL, Client ID o Client Secret) mancanti nelle variabili d'ambiente di Render.")
 
         # 1. Ottenimento del token di accesso tramite Client Credentials / Custom App Auth
         auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
