@@ -117,7 +117,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                 variants = item.get("variants", [])
                 options = item.get("options", [])
 
-                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore)
+                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore, Manica)
                 option_map = {}
                 for opt in options:
                     pos = opt.get("position")
@@ -136,6 +136,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                     taglia = None
                     colore = None
+                    dettaglio_extra = []
 
                     opt_names = [option_map.get(1, ""), option_map.get(2, ""), option_map.get(3, "")]
                     opt_vals = [val1, val2, val3]
@@ -149,13 +150,22 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                             taglia = val
                         elif any(k in name_lower for k in ["colore", "color"]):
                             colore = val
+                        else:
+                            dettaglio_extra.append(val)
+
+                    # Componiamo il nome descrittivo della variante includendo eventuali opzioni extra (es. Manica Lunga/Corta)
+                    suffix_extra = " / ".join(dettaglio_extra)
+                    if variant.get('title') and variant.get('title') != "Default Title":
+                        variant_title_part = variant.get('title')
+                    else:
+                        variant_title_part = " - ".join([v for v in [taglia, colore, suffix_extra] if v])
 
                     record = {
                         "azienda_id": azienda_id,
                         "shopify_product_id": product_id,
                         "shopify_variant_id": variant_id,
                         "sku": sku,
-                        "nome": f"{product_title} - {variant.get('title', '')}".strip(" -"),
+                        "nome": f"{product_title} - {variant_title_part}".strip(" -"),
                         "taglia": taglia,
                         "colore": colore,
                         "prezzo": price,
@@ -164,16 +174,16 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                     all_records.append(record)
 
-                    # Invio in batch da 1000 elementi
+                    # Invio in batch da 1000 elementi basato su shopify_variant_id come chiave univoca
                     if len(all_records) >= 1000:
-                        dedup_dict = {r["sku"]: r for r in all_records}
+                        dedup_dict = {r["shopify_variant_id"]: r for r in all_records}
                         batch_dedup = list(dedup_dict.values())
 
-                        supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="sku").execute()
+                        supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="shopify_variant_id").execute()
                         sincronizzati += len(batch_dedup)
                         all_records = []
 
-            # Gestione Link Header per la paginazione successiva
+            # Gestione Link Header per la paginazione successiva di Shopify
             link_header = response.headers.get("Link", "")
             url = None
             if 'rel="next"' in link_header:
@@ -184,10 +194,10 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
         # Invio degli eventuali record rimanenti inferiori a 1000
         if all_records:
-            dedup_dict = {r["sku"]: r for r in all_records}
+            dedup_dict = {r["shopify_variant_id"]: r for r in all_records}
             batch_dedup = list(dedup_dict.values())
 
-            supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="sku").execute()
+            supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="shopify_variant_id").execute()
             sincronizzati += len(batch_dedup)
 
         return {
