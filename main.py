@@ -64,8 +64,6 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
         
         auth_response = requests.post(auth_url, json=auth_payload)
         if auth_response.status_code != 200:
-            # Fallback o gestione se l'endpoint richiede una generazione token differente
-            # Proviamo a usare direttamente le credenziali come basic auth se supportato, oppure solleviamo l'errore
             raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
 
         token_data = auth_response.json()
