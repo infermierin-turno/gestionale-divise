@@ -18,7 +18,6 @@ def read_root():
 @app.get("/api/azienda/{azienda_id}")
 def get_azienda(azienda_id: int):
     try:
-        # Rimossa la forzatura dello schema se non esposto, usa il public di default
         response = supabase.table("aziende").select("*").eq("id", azienda_id).execute()
         
         if not response.data:
@@ -31,8 +30,8 @@ def get_azienda(azienda_id: int):
 @app.get("/api/products")
 def get_products():
     try:
-        # Interroga la tabella prodotti sullo schema predefinito esposto da Supabase
-        response = supabase.table("prodotti").select("*").execute()
+        # Interroga correttamente la tabella 'articoli' nello schema public
+        response = supabase.table("articoli").select("*").execute()
         
         return response.data if response.data else []
     except Exception as e:
