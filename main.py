@@ -10,8 +10,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Lettura delle credenziali usando esattamente i nomi presenti su Render (SHOP_URL)
-SHOPIFY_SHOP = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP")
+# Lettura delle credenziali e pulizia automatica di eventuali prefissi http:// o https:// in SHOP_URL
+raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
+SHOPIFY_SHOP = raw_shop_url.replace("https://", "").replace("http://", "").strip("/")
+
 SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
