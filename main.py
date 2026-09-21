@@ -64,6 +64,59 @@ def get_products():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/magazzino/trasferisci")
+def trasferisci_giacenza(payload_data: Dict[str, Any]):
+    try:
+        articolo_id = payload_data.get("articolo_id")
+        quantita = int(payload_data.get("quantita", 0))
+        direzione = payload_data.get("direzione") # "dep_to_neg" (da Deposito a Negozio) oppure "neg_to_dep" (da Negozio a Deposito)
+
+        if not articolo_id or quantita <= 0:
+            raise HTTPException(status_code=400, detail="ID articolo mancante o quantità non valida.")
+
+        if direzione not in ["dep_to_neg", "neg_to_dep"]:
+            raise HTTPException(status_code=400, detail="Direzione di trasferimento non valida.")
+
+        # 1. Recuperiamo lo stato attuale dell'articolo
+        resp = supabase.schema("gestionale_divise").table("articoli").select("giacenza_deposito, giacenza_negozio").eq("id", articolo_id).execute()
+        
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Articolo non trovato nel database.")
+
+        articolo = resp.data[0]
+        deposito_attuale = int(articolo.get("giacenza_deposito", 0))
+        negozio_attuale = int(articolo.get("giacenza_negozio", 0))
+
+        # 2. Verifichiamo la disponibilità e calcoliamo i nuovi valori
+        if direzione == "dep_to_neg":
+            if deposito_attuale < quantita:
+                raise HTTPException(status_code=400, detail=f"Giacenza insufficiente in Deposito! Disponibili: {deposito_attuale}")
+            nuovo_deposito = deposito_attuale - quantita
+            nuovo_negozio = negozio_attuale + quantita
+        else:
+            if negozio_attuale < quantita:
+                raise HTTPException(status_code=400, detail=f"Giacenza insufficiente in Negozio! Disponibili: {negozio_attuale}")
+            nuovo_deposito = deposito_attuale + quantita
+            nuovo_negozio = negozio_attuale - quantita
+
+        # 3. Aggiorniamo il record su Supabase
+        update_resp = supabase.schema("gestionale_divise").table("articoli").update({
+            "giacenza_deposito": nuovo_deposito,
+            "giacenza_negozio": nuovo_negozio
+        }).eq("id", articolo_id).execute()
+
+        return {
+            "status": "success",
+            "message": "Trasferimento completato con successo!",
+            "giacenza_deposito": nuovo_deposito,
+            "giacenza_negozio": nuovo_negozio
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/sync-shopify")
 def sync_shopify_products(payload_data: Dict[str, Any]):
     try:
