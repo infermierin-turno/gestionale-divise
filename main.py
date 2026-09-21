@@ -18,8 +18,8 @@ def read_root():
 @app.get("/api/azienda/{azienda_id}")
 def get_azienda(azienda_id: int):
     try:
-        # Specifichiamo lo schema personalizzato 'gestionale_divise'
-        response = supabase.schema("gestionale_divise").table("aziende").select("*").eq("id", azienda_id).execute()
+        # Rimossa la forzatura dello schema se non esposto, usa il public di default
+        response = supabase.table("aziende").select("*").eq("id", azienda_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Azienda non trovata nel sistema")
@@ -31,8 +31,8 @@ def get_azienda(azienda_id: int):
 @app.get("/api/products")
 def get_products():
     try:
-        # Se i prodotti sono salvati in Supabase (es. tabella 'prodotti' nello schema 'gestionale_divise')
-        response = supabase.schema("gestionale_divise").table("prodotti").select("*").execute()
+        # Interroga la tabella prodotti sullo schema predefinito esposto da Supabase
+        response = supabase.table("prodotti").select("*").execute()
         
         return response.data if response.data else []
     except Exception as e:
