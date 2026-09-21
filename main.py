@@ -41,9 +41,26 @@ def get_azienda(azienda_id: int):
 @app.get("/api/products")
 def get_products():
     try:
-        # Range esteso fino a 10000 record per superare il limite predefinito di 1000 righe di Supabase
-        response = supabase.schema("gestionale_divise").table("articoli").select("*").range(0, 9999).execute()
-        return response.data if response.data else []
+        all_products = []
+        batch_size = 1000
+        start = 0
+        
+        # Ciclo di paginazione per superare il limite di 1000 righe per singola query imposto da Supabase
+        while True:
+            response = supabase.schema("gestionale_divise").table("articoli").select("*").range(start, start + batch_size - 1).execute()
+            rows = response.data if response.data else []
+            
+            if not rows:
+                break
+                
+            all_products.extend(rows)
+            
+            if len(rows) < batch_size:
+                break
+                
+            start += batch_size
+            
+        return all_products
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
