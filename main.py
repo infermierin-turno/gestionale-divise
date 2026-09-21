@@ -98,6 +98,7 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
         }
 
         all_records = []
+        active_variant_ids = []
         sincronizzati = 0
 
         while url:
@@ -127,6 +128,8 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
 
                 for variant in variants:
                     variant_id = variant.get("id")
+                    active_variant_ids.append(variant_id)
+
                     sku = variant.get("sku") or f"SKU-{variant_id}"
                     price = float(variant.get("price", 0.0))
                     
@@ -200,10 +203,23 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
             supabase.schema("gestionale_divise").table("articoli").upsert(batch_dedup, on_conflict="shopify_variant_id").execute()
             sincronizzati += len(batch_dedup)
 
+        # 3. Pulizia automatica: rimuoviamo dal database locale gli articoli/varianti non più presenti su Shopify
+        deleted_count = 0
+        if active_variant_ids:
+            # Per evitare problemi con query troppo lunghe in un colpo solo, eseguiamo la pulizia a blocchi se necessario o via not-in
+            # Nota: Supabase permette di filtrare con .not_.in_("shopify_variant_id", active_variant_ids)
+            # Per sicurezza gestiamo eventuali liste grandi dividendole o passandole direttamente se supportato.
+            # Qui eseguiamo la cancellazione dei record che NON sono presenti nell'array attivo di Shopify
+            delete_response = supabase.schema("gestionale_divise").table("articoli").delete().not_.in_("shopify_variant_id", active_variant_ids).eq("azienda_id", azienda_id).execute()
+            # Se la risposta restituisce i dati eliminati, possiamo contarli
+            if delete_response.data:
+                deleted_count = len(delete_response.data)
+
         return {
             "status": "success",
-            "message": f"Sincronizzazione completata con successo! Totale articoli sincronizzati in batch: {sincronizzati}",
-            "total_synced": sincronizzati
+            "message": f"Sincronizzazione completata! Aggiornati/Inseriti: {sincronizzati}, Rimossi dal DB (perché cancellati su Shopify): {deleted_count}",
+            "total_synced": sincronizzati,
+            "total_deleted": deleted_count
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
