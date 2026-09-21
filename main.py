@@ -1,6 +1,7 @@
+import os
+import requests
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any
 from database import supabase
 
 app = FastAPI(
@@ -8,6 +9,12 @@ app = FastAPI(
     description="Backend multi-canale per la gestione ordini e magazzino - divisedivise.it",
     version="1.0.0"
 )
+
+# Lettura delle credenziali dell'app Shopify dalle variabili d'ambiente di Render
+SHOPIFY_SHOP = os.getenv("SHOPIFY_SHOP")
+SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
+SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
+SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
 @app.get("/")
 def read_root():
@@ -42,36 +49,95 @@ def get_products():
 @app.post("/api/sync-shopify")
 def sync_shopify_products(payload_data: Dict[str, Any]):
     try:
-        articoli = payload_data.get("articoli", [])
-        azienda_id = payload_data.get("azienda_id")
+        azienda_id = payload_data.get("azienda_id", 1)
 
-        if not articoli:
-            return {"status": "success", "message": "Nessun articolo ricevuto.", "total_synced": 0}
+        if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+            raise HTTPException(status_code=500, detail="Credenziali Shopify (Shop, Client ID o Client Secret) mancanti nelle variabili d'ambiente di Render.")
+
+        # 1. Ottenimento del token di accesso tramite Client Credentials / Custom App Auth
+        auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
+        auth_payload = {
+            "client_id": SHOPIFY_CLIENT_ID,
+            "client_secret": SHOPIFY_CLIENT_SECRET,
+            "grant_type": "client_credentials"
+        }
+        
+        auth_response = requests.post(auth_url, json=auth_payload)
+        if auth_response.status_code != 200:
+            # Fallback o gestione se l'endpoint richiede una generazione token differente
+            # Proviamo a usare direttamente le credenziali come basic auth se supportato, oppure solleviamo l'errore
+            raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
+
+        token_data = auth_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token dalla risposta di Shopify.")
+
+        # 2. Interrogazione dei prodotti con paginazione
+        url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/products.json?limit=250"
+        headers = {
+            "X-Shopify-Access-Token": access_token,
+            "Content-Type": "application/json"
+        }
 
         sincronizzati = 0
-        for item in articoli:
-            record = {
-                "azienda_id": azienda_id,
-                "shopify_product_id": item.get("shopify_product_id") or item.get("product_id"),
-                "shopify_variant_id": item.get("shopify_variant_id") or item.get("variant_id"),
-                "sku": item.get("sku", ""),
-                "nome": item.get("nome") or item.get("title", "Senza nome"),
-                "taglia": item.get("taglia") or item.get("option1"),
-                "colore": item.get("colore") or item.get("option2"),
-                "prezzo": float(item.get("prezzo") or item.get("price", 0.0)),
-                "aliquota_iva": float(item.get("aliquota_iva", 22.00))
-            }
 
-            if record["sku"]:
-                supabase.schema("gestionale_divise").table("articoli").upsert(record, on_conflict="sku").execute()
-            else:
-                supabase.schema("gestionale_divise").table("articoli").insert(record).execute()
-                
-            sincronizzati += 1
+        while url:
+            response = requests.get(url, headers=headers)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=f"Errore chiamata prodotti Shopify: {response.text}")
+            
+            data = response.json()
+            products = data.get("products", [])
+
+            if not products:
+                break
+
+            for item in products:
+                product_id = item.get("id")
+                product_title = item.get("title", "Senza nome")
+                variants = item.get("variants", [])
+
+                for variant in variants:
+                    variant_id = variant.get("id")
+                    sku = variant.get("sku") or f"SKU-{variant_id}"
+                    price = float(variant.get("price", 0.0))
+                    
+                    option1 = variant.get("option1")
+                    option2 = variant.get("option2")
+
+                    record = {
+                        "azienda_id": azienda_id,
+                        "shopify_product_id": product_id,
+                        "shopify_variant_id": variant_id,
+                        "sku": sku,
+                        "nome": f"{product_title} - {variant.get('title', '')}".strip(" -"),
+                        "taglia": option1 if option1 and option1 != "Default Title" else None,
+                        "colore": option2 if option2 and option2 != "Default Title" else None,
+                        "prezzo": price,
+                        "aliquota_iva": 22.00
+                    }
+
+                    if record["sku"]:
+                        supabase.schema("gestionale_divise").table("articoli").upsert(record, on_conflict="sku").execute()
+                    else:
+                        supabase.schema("gestionale_divise").table("articoli").insert(record).execute()
+                        
+                    sincronizzati += 1
+
+            # Gestione Link Header per la paginazione successiva
+            link_header = response.headers.get("Link", "")
+            url = None
+            if 'rel="next"' in link_header:
+                parts = link_header.split(",")
+                for part in parts:
+                    if 'rel="next"' in part:
+                        url = part.split(";")[0].strip().strip("<>")
 
         return {
             "status": "success",
-            "message": "Sincronizzazione completata con successo.",
+            "message": f"Sincronizzazione completata con successo! Totale articoli sincronizzati: {sincronizzati}",
             "total_synced": sincronizzati
         }
     except Exception as e:
