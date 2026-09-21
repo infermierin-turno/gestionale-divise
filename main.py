@@ -64,6 +64,40 @@ def get_products():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/magazzino/carico-deposito")
+def carico_deposito(payload_data: Dict[str, Any]):
+    try:
+        articolo_id = payload_data.get("articolo_id")
+        quantita = int(payload_data.get("quantita", 0))
+
+        if not articolo_id or quantita <= 0:
+            raise HTTPException(status_code=400, detail="ID articolo mancante o quantità di carico non valida.")
+
+        # 1. Recuperiamo la giacenza attuale del deposito
+        resp = supabase.schema("gestionale_divise").table("articoli").select("giacenza_deposito").eq("id", articolo_id).execute()
+        
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Articolo non trovato nel database.")
+
+        deposito_attuale = int(resp.data[0].get("giacenza_deposito", 0))
+        nuovo_deposito = deposito_attuale + quantita
+
+        # 2. Aggiorniamo il record su Supabase
+        supabase.schema("gestionale_divise").table("articoli").update({
+            "giacenza_deposito": nuovo_deposito
+        }).eq("id", articolo_id).execute()
+
+        return {
+            "status": "success",
+            "message": "Carico in deposito completato con successo!",
+            "giacenza_deposito": nuovo_deposito
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/magazzino/trasferisci")
 def trasferisci_giacenza(payload_data: Dict[str, Any]):
     try:
@@ -100,7 +134,7 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
             nuovo_negozio = negozio_attuale - quantita
 
         # 3. Aggiorniamo il record su Supabase
-        update_resp = supabase.schema("gestionale_divise").table("articoli").update({
+        supabase.schema("gestionale_divise").table("articoli").update({
             "giacenza_deposito": nuovo_deposito,
             "giacenza_negozio": nuovo_negozio
         }).eq("id", articolo_id).execute()
