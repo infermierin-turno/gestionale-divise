@@ -96,14 +96,42 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                 product_id = item.get("id")
                 product_title = item.get("title", "Senza nome")
                 variants = item.get("variants", [])
+                options = item.get("options", [])
+
+                # Mappatura dinamica delle opzioni in base al nome (es. Taglia, Colore, Manica)
+                option_map = {}
+                for opt in options:
+                    pos = opt.get("position") # 1, 2, o 3
+                    name = opt.get("name", "").strip().lower()
+                    if pos:
+                        option_map[pos] = name
 
                 for variant in variants:
                     variant_id = variant.get("id")
                     sku = variant.get("sku") or f"SKU-{variant_id}"
                     price = float(variant.get("price", 0.0))
                     
-                    option1 = variant.get("option1")
-                    option2 = variant.get("option2")
+                    val1 = variant.get("option1")
+                    val2 = variant.get("option2")
+                    val3 = variant.get("option3")
+
+                    taglia = None
+                    colore = None
+
+                    # Associazione intelligente basata sul nome effettivo dell'opzione Shopify
+                    opt_names = [option_map.get(1, ""), option_map.get(2, ""), option_map.get(3, "")]
+                    opt_vals = [val1, val2, val3]
+
+                    for name, val in zip(opt_names, opt_vals):
+                        if not val or val == "Default Title":
+                            continue
+                        
+                        name_lower = name.lower()
+                        if any(k in name_lower for k in ["taglia", "size", "dimensione"]):
+                            taglia = val
+                        elif any(k in name_lower for k in ["colore", "color"]):
+                            colore = val
+                        # Se il campo si chiama manica o altro, lo gestiamo correttamente o lo ignoriamo se serve solo il colore
 
                     record = {
                         "azienda_id": azienda_id,
@@ -111,8 +139,8 @@ def sync_shopify_products(payload_data: Dict[str, Any]):
                         "shopify_variant_id": variant_id,
                         "sku": sku,
                         "nome": f"{product_title} - {variant.get('title', '')}".strip(" -"),
-                        "taglia": option1 if option1 and option1 != "Default Title" else None,
-                        "colore": option2 if option2 and option2 != "Default Title" else None,
+                        "taglia": taglia,
+                        "colore": colore,
                         "prezzo": price,
                         "aliquota_iva": 22.00
                     }
