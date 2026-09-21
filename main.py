@@ -27,3 +27,13 @@ def get_azienda(azienda_id: int):
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/products")
+def get_products():
+    try:
+        # Se i prodotti sono salvati in Supabase (es. tabella 'prodotti' nello schema 'gestionale_divise')
+        response = supabase.schema("gestionale_divise").table("prodotti").select("*").execute()
+        
+        return response.data if response.data else []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
