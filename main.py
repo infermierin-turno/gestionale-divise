@@ -4,15 +4,17 @@ from fastapi import FastAPI, HTTPException
 from typing import Dict, Any
 from database import supabase
 from routers import clienti
+from shopify_orders_router import router as shopify_orders_router
 
 app = FastAPI(
     title="Gestionale Divise API",
     description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
-    version="1.2.1"
+    version="1.2.2"
 )
 
-# Inclusione del router clienti separato
+# Inclusione dei router separati
 app.include_router(clienti.router)
+app.include_router(shopify_orders_router)
 
 # Lettura delle credenziali e pulizia automatica di eventuali prefissi http:// o https:// in SHOP_URL
 raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
@@ -257,7 +259,7 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
-# SINCRONIZZAZIONE SHOPIFY
+# SINCRONIZZAZIONE SHOPIFY (PRODOTTI / CLIENTI)
 # ==========================================
 
 @app.post("/api/sync-shopify-customers")
