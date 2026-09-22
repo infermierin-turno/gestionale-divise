@@ -2,9 +2,10 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 from database import supabase
 
-router = APIRouter(prefix="/api/clienti", tags=["Clienti"])
+router = APIRouter(tags=["Clienti"])
 
-@router.get("/")
+@router.get("/api/customers")
+@router.get("/api/clienti")
 def get_customers():
     try:
         all_customers = []
@@ -29,7 +30,8 @@ def get_customers():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{cliente_id}")
+@router.get("/api/customers/{cliente_id}")
+@router.get("/api/clienti/{cliente_id}")
 def get_cliente_dettaglio(cliente_id: int):
     try:
         resp = supabase.schema("gestionale_divise").table("clienti").select("*").eq("id", cliente_id).execute()
@@ -41,10 +43,10 @@ def get_cliente_dettaglio(cliente_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/")
+@router.post("/api/customers")
+@router.post("/api/clienti")
 def crea_cliente(payload_data: Dict[str, Any]):
     try:
-        # Se non viene passato un campo azienda_id, lo impostiamo di default a 1
         if "azienda_id" not in payload_data:
             payload_data["azienda_id"] = 1
 
@@ -54,16 +56,18 @@ def crea_cliente(payload_data: Dict[str, Any]):
         
         return {
             "status": "success",
-            "message": "Cliente creato con successo per il negozio fisico!",
+            "message": "Cliente creato con successo nel database Supabase!",
             "cliente": resp.data[0]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.put("/{cliente_id}")
+@router.put("/api/customers/{cliente_id}")
+@router.put("/api/clienti/{cliente_id}")
+@router.patch("/api/customers/{cliente_id}")
+@router.patch("/api/clienti/{cliente_id}")
 def aggiorna_cliente(cliente_id: int, payload_data: Dict[str, Any]):
     try:
-        # Rimuoviamo l'id dal payload se presente per evitare conflitti nell'update
         payload_data.pop("id", None)
 
         resp = supabase.schema("gestionale_divise").table("clienti").update(payload_data).eq("id", cliente_id).execute()
