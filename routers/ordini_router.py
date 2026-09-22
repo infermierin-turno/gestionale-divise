@@ -176,16 +176,12 @@ def fetch_order_by_name(name: str = Query(...)):
             "Content-Type": "application/json"
         }
 
-        # Ampliamo la ricerca: cerchiamo sia con cancelletto che come nome esatto
         orders = []
-        
-        # 1. Tentativo con il nome esatto (es. 8588)
         url_1 = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={clean_name}&status=any"
         res_1 = requests.get(url_1, headers=headers, timeout=30)
         if res_1.status_code == 200:
             orders = res_1.json().get("orders", [])
 
-        # 2. Tentativo con il cancelletto se non trovato
         if not orders:
             url_2 = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name=%23{clean_name}&status=any"
             res_2 = requests.get(url_2, headers=headers, timeout=30)
