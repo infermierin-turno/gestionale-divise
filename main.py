@@ -171,6 +171,25 @@ def crea_documento(payload_data: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/documenti/da-ordine/{id_ordine}")
+def crea_documento_da_ordine(id_ordine: int):
+    try:
+        ordine_resp = supabase.schema("gestionale_divise").table("ordini").select("*").eq("id", id_ordine).execute()
+        if not ordine_resp.data:
+            raise HTTPException(status_code=404, detail="Ordine non trovato nel sistema.")
+        
+        ordine = ordine_resp.data[0]
+        
+        return {
+            "status": "success",
+            "message": f"Ordine ID {id_ordine} convertito in documento con successo!",
+            "ordine": ordine
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==========================================
 # GESTIONE MAGAZZINO
 # ==========================================
