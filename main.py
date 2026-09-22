@@ -88,8 +88,20 @@ def get_customers():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/clienti/{cliente_id}")
+def get_cliente_dettaglio(cliente_id: int):
+    try:
+        resp = supabase.schema("gestionale_divise").table("clienti").select("*").eq("id", cliente_id).execute()
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Cliente non trovato nel sistema.")
+        return resp.data[0]
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==========================================
-# NUOVI ENDPOINT: DOCUMENTI E RIGHE
+# GESTIONE DOCUMENTI E RIGHE
 # ==========================================
 
 @app.get("/api/documenti")
@@ -126,8 +138,19 @@ def get_documento_dettaglio(documento_id: int):
         
         documento = doc_resp.data[0]
         
+        # Recupero righe documento
         righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").select("*").eq("documento_id", documento_id).execute()
         documento["righe"] = righe_resp.data if righe_resp.data else []
+        
+        # Recupero automatico dei dati del cliente associato (JOIN logico)
+        cliente_id = documento.get("cliente_id")
+        cliente_data = None
+        if cliente_id:
+            cli_resp = supabase.schema("gestionale_divise").table("clienti").select("*").eq("id", cliente_id).execute()
+            if cli_resp.data:
+                cliente_data = cli_resp.data[0]
+        
+        documento["cliente"] = cliente_data
         
         return documento
     except HTTPException as he:
