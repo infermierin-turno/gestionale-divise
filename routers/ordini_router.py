@@ -1,7 +1,7 @@
 import os
 import requests
-from fastapi import APIRouter, HTTPException, Query, Header, Depends
-from typing import Dict, Any, Optional
+from fastapi import APIRouter, HTTPException, Query
+from typing import Dict, Any
 from database import supabase
 
 router = APIRouter(prefix="/api/shopify", tags=["Shopify Orders"])
@@ -34,9 +34,14 @@ def get_shopify_access_token() -> str:
     return access_token
 
 def process_and_save_order(ord_item: dict, azienda_id: int = 1):
-    shopify_order_id = ord_item.get("id")
+    try:
+        # Assicuriamoci che l'ID sia un intero (o stringa pulita a seconda del DB)
+        raw_id = ord_item.get("id")
+        shopify_order_id = int(raw_id) if raw_id is not None else None
+    except ValueError:
+        shopify_order_id = raw_id
+
     shopify_order_name = ord_item.get("name", "")
-    
     totale_ordine = float(ord_item.get("total_price", 0.0))
     
     totale_spedizione = 0.0
@@ -61,8 +66,12 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
         "created_at": ord_item.get("created_at")
     }
 
-    supabase.schema("gestionale_divise").table("ordini").upsert([record], on_conflict="shopify_order_id").execute()
-    return record
+    try:
+        # Eseguiamo l'upsert puntando esplicitamente alla tabella corretta
+        res = supabase.schema("gestionale_divise").table("ordini").upsert(record, on_conflict="shopify_order_id").execute()
+        return {"record": record, "response": str(res)}
+    except Exception as db_err:
+        raise HTTPException(status_code=500, detail=f"Errore scrittura Supabase: {str(db_err)}")
 
 @router.post("/sync-orders")
 def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
@@ -91,9 +100,13 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                 break
 
             for ord_item in orders:
-                shopify_order_id = ord_item.get("id")
+                try:
+                    raw_id = ord_item.get("id")
+                    shopify_order_id = int(raw_id) if raw_id is not None else None
+                except ValueError:
+                    shopify_order_id = raw_id
+
                 shopify_order_name = ord_item.get("name", "")
-                
                 totale_ordine = float(ord_item.get("total_price", 0.0))
                 
                 totale_spedizione = 0.0
@@ -120,7 +133,7 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
 
                 all_records.append(record)
 
-                if len(all_records) >= 1000:
+                if len(all_records) >= 500:
                     dedup_dict = {r["shopify_order_id"]: r for r in all_records}
                     batch_dedup = list(dedup_dict.values())
                     supabase.schema("gestionale_divise").table("ordini").upsert(batch_dedup, on_conflict="shopify_order_id").execute()
@@ -162,7 +175,6 @@ def fetch_order_by_name(name: str = Query(...)):
             "Content-Type": "application/json"
         }
 
-        # Tentativo con il cancelletto codificato (%23)
         shopify_api_url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name=%23{clean_name}&status=any"
         response = requests.get(shopify_api_url, headers=headers, timeout=30)
         
@@ -170,7 +182,6 @@ def fetch_order_by_name(name: str = Query(...)):
         if response.status_code == 200:
             orders = response.json().get("orders", [])
 
-        # Secondo tentativo senza cancelletto se non trovato
         if not orders:
             shopify_api_url_alt = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={clean_name}&status=any"
             response_alt = requests.get(shopify_api_url_alt, headers=headers, timeout=30)
@@ -180,12 +191,12 @@ def fetch_order_by_name(name: str = Query(...)):
         if not orders:
             raise HTTPException(status_code=404, detail="Order not found on Shopify")
 
-        ordine_salvato = process_and_save_order(orders[0])
+        result = process_and_save_order(orders[0])
 
         return {
             "status": "success",
             "message": f"Ordine {name} trovato e importato correttamente.",
-            "order": ordine_salvato
+            "data": result
         }
     except HTTPException as he:
         raise he
