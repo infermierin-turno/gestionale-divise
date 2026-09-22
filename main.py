@@ -3,12 +3,16 @@ import requests
 from fastapi import FastAPI, HTTPException
 from typing import Dict, Any
 from database import supabase
+from routers import clienti
 
 app = FastAPI(
     title="Gestionale Divise API",
     description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
-    version="1.1.0"
+    version="1.2.1"
 )
+
+# Inclusione del router clienti separato
+app.include_router(clienti.router)
 
 # Lettura delle credenziali e pulizia automatica di eventuali prefissi http:// o https:// in SHOP_URL
 raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
@@ -63,43 +67,6 @@ def get_products():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/customers")
-def get_customers():
-    try:
-        all_customers = []
-        batch_size = 1000
-        start = 0
-        
-        while True:
-            response = supabase.schema("gestionale_divise").table("clienti").select("*").range(start, start + batch_size - 1).execute()
-            rows = response.data if response.data else []
-            
-            if not rows:
-                break
-                
-            all_customers.extend(rows)
-            
-            if len(rows) < batch_size:
-                break
-                
-            start += batch_size
-            
-        return all_customers
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/clienti/{cliente_id}")
-def get_cliente_dettaglio(cliente_id: int):
-    try:
-        resp = supabase.schema("gestionale_divise").table("clienti").select("*").eq("id", cliente_id).execute()
-        if not resp.data:
-            raise HTTPException(status_code=404, detail="Cliente non trovato nel sistema.")
-        return resp.data[0]
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ==========================================
 # GESTIONE DOCUMENTI E RIGHE
 # ==========================================
@@ -138,11 +105,9 @@ def get_documento_dettaglio(documento_id: int):
         
         documento = doc_resp.data[0]
         
-        # Recupero righe documento
         righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").select("*").eq("documento_id", documento_id).execute()
         righe = righe_resp.data if righe_resp.data else []
         
-        # Recupero automatico dei dati dell'articolo per ogni riga (JOIN logico)
         for riga in righe:
             articolo_id = riga.get("articolo_id")
             articolo_data = None
@@ -154,7 +119,6 @@ def get_documento_dettaglio(documento_id: int):
 
         documento["righe"] = righe
         
-        # Recupero automatico dei dati del cliente associato (JOIN logico)
         cliente_id = documento.get("cliente_id")
         cliente_data = None
         if cliente_id:
