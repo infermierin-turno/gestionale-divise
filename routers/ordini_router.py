@@ -1,5 +1,6 @@
 import os
 import requests
+import traceback
 from fastapi import APIRouter, HTTPException, Query
 from typing import Dict, Any
 from database import supabase
@@ -35,7 +36,6 @@ def get_shopify_access_token() -> str:
 
 def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     try:
-        # Assicuriamoci che l'ID sia un intero (o stringa pulita a seconda del DB)
         raw_id = ord_item.get("id")
         shopify_order_id = int(raw_id) if raw_id is not None else None
     except ValueError:
@@ -67,10 +67,10 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     }
 
     try:
-        # Eseguiamo l'upsert puntando esplicitamente alla tabella corretta
         res = supabase.schema("gestionale_divise").table("ordini").upsert(record, on_conflict="shopify_order_id").execute()
         return {"record": record, "response": str(res)}
     except Exception as db_err:
+        print(f"ERRORE SUPABASE: {str(db_err)}")
         raise HTTPException(status_code=500, detail=f"Errore scrittura Supabase: {str(db_err)}")
 
 @router.post("/sync-orders")
@@ -159,6 +159,7 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
             "total_synced": sincronizzati
         }
     except Exception as e:
+        print(f"ERRORE SYNC: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/fetch-order-by-name")
@@ -175,21 +176,24 @@ def fetch_order_by_name(name: str = Query(...)):
             "Content-Type": "application/json"
         }
 
-        shopify_api_url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name=%23{clean_name}&status=any"
-        response = requests.get(shopify_api_url, headers=headers, timeout=30)
-        
+        # Ampliamo la ricerca: cerchiamo sia con cancelletto che come nome esatto
         orders = []
-        if response.status_code == 200:
-            orders = response.json().get("orders", [])
+        
+        # 1. Tentativo con il nome esatto (es. 8588)
+        url_1 = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={clean_name}&status=any"
+        res_1 = requests.get(url_1, headers=headers, timeout=30)
+        if res_1.status_code == 200:
+            orders = res_1.json().get("orders", [])
+
+        # 2. Tentativo con il cancelletto se non trovato
+        if not orders:
+            url_2 = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name=%23{clean_name}&status=any"
+            res_2 = requests.get(url_2, headers=headers, timeout=30)
+            if res_2.status_code == 200:
+                orders = res_2.json().get("orders", [])
 
         if not orders:
-            shopify_api_url_alt = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={clean_name}&status=any"
-            response_alt = requests.get(shopify_api_url_alt, headers=headers, timeout=30)
-            if response_alt.status_code == 200:
-                orders = response_alt.json().get("orders", [])
-
-        if not orders:
-            raise HTTPException(status_code=404, detail="Order not found on Shopify")
+            raise HTTPException(status_code=404, detail=f"Ordine '{name}' non trovato su Shopify.")
 
         result = process_and_save_order(orders[0])
 
@@ -201,6 +205,7 @@ def fetch_order_by_name(name: str = Query(...)):
     except HTTPException as he:
         raise he
     except Exception as e:
+        print("ERRORE CRITICO FETCH:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/ordini")
