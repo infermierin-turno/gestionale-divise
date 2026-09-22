@@ -7,7 +7,7 @@ from database import supabase
 app = FastAPI(
     title="Gestionale Divise API",
     description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # Lettura delle credenziali e pulizia automatica di eventuali prefissi http:// o https:// in SHOP_URL
@@ -87,6 +87,93 @@ def get_customers():
         return all_customers
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# NUOVI ENDPOINT: DOCUMENTI E RIGHE
+# ==========================================
+
+@app.get("/api/documenti")
+def get_documenti():
+    try:
+        all_docs = []
+        batch_size = 1000
+        start = 0
+        
+        while True:
+            response = supabase.schema("gestionale_divise").table("documenti").select("*").range(start, start + batch_size - 1).execute()
+            rows = response.data if response.data else []
+            
+            if not rows:
+                break
+                
+            all_docs.extend(rows)
+            
+            if len(rows) < batch_size:
+                break
+                
+            start += batch_size
+            
+        return all_docs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/documenti/{documento_id}")
+def get_documento_dettaglio(documento_id: int):
+    try:
+        doc_resp = supabase.schema("gestionale_divise").table("documenti").select("*").eq("id", documento_id).execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=404, detail="Documento non trovato nel sistema.")
+        
+        documento = doc_resp.data[0]
+        
+        righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").select("*").eq("documento_id", documento_id).execute()
+        documento["righe"] = righe_resp.data if righe_resp.data else []
+        
+        return documento
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/documenti")
+def crea_documento(payload_data: Dict[str, Any]):
+    try:
+        testata = payload_data.get("testata", {})
+        righe = payload_data.get("righe", [])
+
+        if not testata:
+            raise HTTPException(status_code=400, detail="Dati di testata del documento mancanti.")
+
+        doc_resp = supabase.schema("gestionale_divise").table("documenti").insert(testata).execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=500, detail="Errore durante la creazione del documento.")
+        
+        nuovo_documento = doc_resp.data[0]
+        documento_id = nuovo_documento.get("id")
+
+        righe_inserite = []
+        if righe and documento_id:
+            for riga in righe:
+                riga["documento_id"] = documento_id
+            
+            righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").insert(righe).execute()
+            righe_inserite = righe_resp.data if righe_resp.data else []
+
+        nuovo_documento["righe"] = righe_inserite
+
+        return {
+            "status": "success",
+            "message": "Documento creato con successo!",
+            "documento": nuovo_documento
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# GESTIONE MAGAZZINO
+# ==========================================
 
 @app.post("/api/magazzino/carico-deposito")
 def carico_deposito(payload_data: Dict[str, Any]):
@@ -169,6 +256,10 @@ def trasferisci_giacenza(payload_data: Dict[str, Any]):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# SINCRONIZZAZIONE SHOPIFY
+# ==========================================
 
 @app.post("/api/sync-shopify-customers")
 def sync_shopify_customers(payload_data: Dict[str, Any]):
