@@ -1,103 +1,122 @@
+import os
+import requests
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 from database import supabase
 
-router = APIRouter(tags=["Shopify Ordini"])
+router = APIRouter(prefix="/api/shopify", tags=["Shopify Orders"])
 
-@router.post("/api/shopify/webhook/orders")
-@router.post("/api/ordini/shopify")
-def ricevi_ordine_shopify(payload_data: Dict[str, Any]):
-    """
-    Riceve il webhook degli ordini da Shopify, gestisce/crea il cliente in anagrafica 
-    e salva l'ordine nella tabella dedicata gestionale_divise.ordini.
-    """
+raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
+SHOPIFY_SHOP = raw_shop_url.replace("https://", "").replace("http://", "").strip("/")
+SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
+SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
+SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+@app_placeholder_route = None # Solo per struttura
+
+@router.post("/sync-orders")
+def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
     try:
-        # 1. Estrazione dati cliente da Shopify
-        customer_data = payload_data.get("customer", {})
-        email = customer_data.get("email") or payload_data.get("contact_email")
-        
-        cliente_id = None
-        
-        if email:
-            # Verifica se il cliente esiste già per email nello schema gestionale_divise
-            resp_cliente = supabase.schema("gestionale_divise").table("clienti").select("id").eq("email", email).execute()
-            if resp_cliente.data and len(resp_cliente.data) > 0:
-                cliente_id = resp_cliente.data[0]["id"]
-        
-        # Se il cliente non esiste, lo creiamo al volo
-        if not cliente_id:
-            shipping = payload_data.get("shipping_address", {})
-            billing = payload_data.get("billing_address", {})
-            address = shipping if shipping else billing
-            
-            nuovo_cliente = {
-                "azienda_id": 1,
-                "nome": customer_data.get("first_name", ""),
-                "cognome": customer_data.get("last_name", ""),
-                "ragione_sociale": address.get("company", ""),
-                "email": email,
-                "telefono": customer_data.get("phone") or address.get("phone", ""),
-                "indirizzo": address.get("address1", ""),
-                "citta": address.get("city", ""),
-                "cap": address.get("zip", ""),
-                "provincia": address.get("province_code", ""),
-            }
-            
-            resp_new_cli = supabase.schema("gestionale_divise").table("clienti").insert(nuovo_cliente).execute()
-            if resp_new_cli.data:
-                cliente_id = resp_new_cli.data[0]["id"]
+        azienda_id = payload_data.get("azienda_id", 1)
 
-        # 2. Estrazione dati economici e di spedizione dell'ordine
-        shopify_order_id = payload_data.get("id")
-        shopify_order_name = str(payload_data.get("name", payload_data.get("order_number", "")))
-        
-        totale_prodotti = float(payload_data.get("subtotal_price", payload_data.get("total_line_items_price", 0.0)))
-        
-        # Calcolo spedizione dalle shipping lines
-        totale_spedizione = 0.0
-        shipping_lines = payload_data.get("shipping_lines", [])
-        for sl in shipping_lines:
-            totale_spedizione += float(sl.get("price", 0.0))
-            
-        totale_ordine = float(payload_data.get("total_price", 0.0))
+        if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+            raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti nelle variabili d'ambiente.")
 
-        # Verifica se viene richiesta fattura (es. presenza di P.IVA o note fiscali nell'ordine)
-        billing_address = payload_data.get("billing_address", {})
-        note_ordine = payload_data.get("note", "")
-        
-        richiede_fattura = False
-        if billing_address.get("company") or "fattura" in note_ordine.lower() or payload_data.get("tax_lines"):
-            richiede_fattura = True
-
-        # 3. Inserimento nella tabella gestionale_divise.ordini
-        ordine_payload = {
-            "azienda_id": 1,
-            "shopify_order_id": shopify_order_id,
-            "shopify_order_name": shopify_order_name,
-            "canale_vendita": "Shopify",
-            "cliente_id": cliente_id,
-            "stato_ordine": "nuovo",
-            "totale_prodotti": totale_prodotti,
-            "totale_spedizione": totale_spedizione,
-            "totale_ordine": totale_ordine,
-            "richiede_fattura": richiede_fattura,
-            "fattura_emessa": False,
-            "note_personalizzazione": note_ordine if note_ordine else None
+        # Autenticazione OAuth Shopify (Client Credentials)
+        auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
+        auth_payload = {
+            "client_id": SHOPIFY_CLIENT_ID,
+            "client_secret": SHOPIFY_CLIENT_SECRET,
+            "grant_type": "client_credentials"
         }
         
-        resp_ordine = supabase.schema("gestionale_divise").table("ordini").insert(ordine_payload).execute()
-        if not resp_ordine.data:
-            raise HTTPException(status_code=500, detail="Errore durante il salvataggio dell'ordine nella tabella ordini.")
-        
-        ordine_creato = resp_ordine.data[0]
-        ordine_id = ordine_creato["id"]
+        auth_response = requests.post(auth_url, json=auth_payload, timeout=30)
+        if auth_response.status_code != 200:
+            raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
+
+        access_token = auth_response.json().get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
+
+        # Chiamata alle API ordini di Shopify
+        url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?status=any&limit=250"
+        headers = {
+            "X-Shopify-Access-Token": access_token,
+            "Content-Type": "application/json"
+        }
+
+        all_records = []
+        sincronizzati = 0
+
+        while url:
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=f"Errore chiamata ordini Shopify: {response.text}")
+            
+            data = response.json()
+            orders = data.get("orders", [])
+
+            if not orders:
+                break
+
+            for ord_item in orders:
+                shopify_order_id = ord_item.get("id")
+                nome_ordine = ord_item.get("name", "")
+                totale = float(ord_item.get("total_price", 0.0))
+                data_ordine = ord_item.get("created_at", "")
+                
+                customer = ord_item.get("customer", {})
+                cliente_nome = ""
+                if customer:
+                    cliente_nome = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+                if not cliente_nome:
+                    cliente_nome = "Cliente Web"
+
+                record = {
+                    "azienda_id": azienda_id,
+                    "shopify_order_id": shopify_order_id,
+                    "nome_ordine": nome_ordine,
+                    "cliente_nome": cliente_nome,
+                    "totale": totale,
+                    "data_ordine": data_ordine,
+                    "stato": ord_item.get("financial_status", "pending")
+                }
+
+                all_records.append(record)
+
+                if len(all_records) >= 1000:
+                    dedup_dict = {r["shopify_order_id"]: r for r in all_records}
+                    batch_dedup = list(dedup_dict.values())
+                    supabase.schema("gestionale_divise").table("ordini").upsert(batch_dedup, on_conflict="shopify_order_id").execute()
+                    sincronizzati += len(batch_dedup)
+                    all_records = []
+
+            # Paginazione Link header di Shopify
+            link_header = response.headers.get("Link", "")
+            url = None
+            if 'rel="next"' in link_header:
+                for part in link_header.split(","):
+                    if 'rel="next"' in part:
+                        url = part.split(";")[0].strip().strip("<>")
+
+        if all_records:
+            dedup_dict = {r["shopify_order_id"]: r for r in all_records}
+            batch_dedup = list(dedup_dict.values())
+            supabase.schema("gestionale_divise").table("ordini").upsert(batch_dedup, on_conflict="shopify_order_id").execute()
+            sincronizzati += len(batch_dedup)
 
         return {
             "status": "success",
-            "message": f"Ordine Shopify {shopify_order_name} sincronizzato correttamente!",
-            "ordine_id": ordine_id,
-            "cliente_id": cliente_id
+            "message": f"Sincronizzazione ordini completata! Sincronizzati: {sincronizzati}",
+            "total_synced": sincronizzati
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/ordini")
+def get_ordini_shopify():
+    try:
+        response = supabase.schema("gestionale_divise").table("ordini").select("*").order("data_ordine", desc=True).execute()
+        return response.data if response.data else []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
