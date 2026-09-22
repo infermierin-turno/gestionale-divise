@@ -57,25 +57,33 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
 
             for ord_item in orders:
                 shopify_order_id = ord_item.get("id")
-                nome_ordine = ord_item.get("name", "")
-                totale = float(ord_item.get("total_price", 0.0))
-                data_ordine = ord_item.get("created_at", "")
+                shopify_order_name = ord_item.get("name", "")
                 
-                customer = ord_item.get("customer", {})
-                cliente_nome = ""
-                if customer:
-                    cliente_nome = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-                if not cliente_nome:
-                    cliente_nome = "Cliente Web"
+                # Calcolo importi richiesti dalla tabella
+                totale_ordine = float(ord_item.get("total_price", 0.0))
+                
+                # Spedizione
+                totale_spedizione = 0.0
+                shipping_lines = ord_item.get("shipping_lines", [])
+                for line in shipping_lines:
+                    totale_spedizione += float(line.get("price", 0.0))
+                
+                totale_prodotti = round(totale_ordine - totale_spedizione, 2)
+                
+                # Stato ordine mappato su stato_ordine
+                financial_status = ord_item.get("financial_status", "pending")
+                stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
 
                 record = {
                     "azienda_id": azienda_id,
                     "shopify_order_id": shopify_order_id,
-                    "nome_ordine": nome_ordine,
-                    "cliente_nome": cliente_nome,
-                    "totale": totale,
-                    "data_ordine": data_ordine,
-                    "stato": ord_item.get("financial_status", "pending")
+                    "shopify_order_name": shopify_order_name,
+                    "canale_vendita": "Shopify",
+                    "stato_ordine": stato_ordine,
+                    "totale_prodotti": totale_prodotti,
+                    "totale_spedizione": totale_spedizione,
+                    "totale_ordine": totale_ordine,
+                    "created_at": ord_item.get("created_at")
                 }
 
                 all_records.append(record)
@@ -111,7 +119,7 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
 @router.get("/ordini")
 def get_ordini_shopify():
     try:
-        response = supabase.schema("gestionale_divise").table("ordini").select("*").order("data_ordine", desc=True).execute()
+        response = supabase.schema("gestionale_divise").table("ordini").select("*").order("created_at", desc=True).execute()
         return response.data if response.data else []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
