@@ -1,7 +1,7 @@
 import os
 import requests
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
+from fastapi import APIRouter, HTTPException, Query, Header, Depends
+from typing import Dict, Any, Optional
 from database import supabase
 
 router = APIRouter(prefix="/api/shopify", tags=["Shopify Orders"])
@@ -12,28 +12,63 @@ SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
+def get_shopify_access_token() -> str:
+    if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti nelle variabili d'ambiente.")
+
+    auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
+    auth_payload = {
+        "client_id": SHOPIFY_CLIENT_ID,
+        "client_secret": SHOPIFY_CLIENT_SECRET,
+        "grant_type": "client_credentials"
+    }
+    
+    auth_response = requests.post(auth_url, json=auth_payload, timeout=30)
+    if auth_response.status_code != 200:
+        raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
+
+    access_token = auth_response.json().get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
+    
+    return access_token
+
+def process_and_save_order(ord_item: dict, azienda_id: int = 1):
+    shopify_order_id = ord_item.get("id")
+    shopify_order_name = ord_item.get("name", "")
+    
+    totale_ordine = float(ord_item.get("total_price", 0.0))
+    
+    totale_spedizione = 0.0
+    shipping_lines = ord_item.get("shipping_lines", [])
+    for line in shipping_lines:
+        totale_spedizione += float(line.get("price", 0.0))
+    
+    totale_prodotti = round(totale_ordine - totale_spedizione, 2)
+    
+    financial_status = ord_item.get("financial_status", "pending")
+    stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
+
+    record = {
+        "azienda_id": azienda_id,
+        "shopify_order_id": shopify_order_id,
+        "shopify_order_name": shopify_order_name,
+        "canale_vendita": "Shopify",
+        "stato_ordine": stato_ordine,
+        "totale_prodotti": totale_prodotti,
+        "totale_spedizione": totale_spedizione,
+        "totale_ordine": totale_ordine,
+        "created_at": ord_item.get("created_at")
+    }
+
+    supabase.schema("gestionale_divise").table("ordini").upsert([record], on_conflict="shopify_order_id").execute()
+    return record
+
 @router.post("/sync-orders")
 def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
     try:
         azienda_id = payload_data.get("azienda_id", 1)
-
-        if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
-            raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti nelle variabili d'ambiente.")
-
-        auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
-        auth_payload = {
-            "client_id": SHOPIFY_CLIENT_ID,
-            "client_secret": SHOPIFY_CLIENT_SECRET,
-            "grant_type": "client_credentials"
-        }
-        
-        auth_response = requests.post(auth_url, json=auth_payload, timeout=30)
-        if auth_response.status_code != 200:
-            raise HTTPException(status_code=auth_response.status_code, detail=f"Autenticazione Shopify fallita: {auth_response.text}")
-
-        access_token = auth_response.json().get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
+        access_token = get_shopify_access_token()
 
         url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?status=any&limit=250"
         headers = {
@@ -59,10 +94,8 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                 shopify_order_id = ord_item.get("id")
                 shopify_order_name = ord_item.get("name", "")
                 
-                # Calcolo importi richiesti dalla tabella
                 totale_ordine = float(ord_item.get("total_price", 0.0))
                 
-                # Spedizione
                 totale_spedizione = 0.0
                 shipping_lines = ord_item.get("shipping_lines", [])
                 for line in shipping_lines:
@@ -70,7 +103,6 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                 
                 totale_prodotti = round(totale_ordine - totale_spedizione, 2)
                 
-                # Stato ordine mappato su stato_ordine
                 financial_status = ord_item.get("financial_status", "pending")
                 stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
 
@@ -113,6 +145,50 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
             "message": f"Sincronizzazione ordini completata! Sincronizzati: {sincronizzati}",
             "total_synced": sincronizzati
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/fetch-order-by-name")
+def fetch_order_by_name(name: str = Query(...)):
+    try:
+        access_token = get_shopify_access_token()
+        
+        clean_name = name.strip()
+        if clean_name.startswith("#"):
+            clean_name = clean_name[1:]
+
+        headers = {
+            "X-Shopify-Access-Token": access_token,
+            "Content-Type": "application/json"
+        }
+
+        # Tentativo con il cancelletto codificato (%23)
+        shopify_api_url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name=%23{clean_name}&status=any"
+        response = requests.get(shopify_api_url, headers=headers, timeout=30)
+        
+        orders = []
+        if response.status_code == 200:
+            orders = response.json().get("orders", [])
+
+        # Secondo tentativo senza cancelletto se non trovato
+        if not orders:
+            shopify_api_url_alt = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={clean_name}&status=any"
+            response_alt = requests.get(shopify_api_url_alt, headers=headers, timeout=30)
+            if response_alt.status_code == 200:
+                orders = response_alt.json().get("orders", [])
+
+        if not orders:
+            raise HTTPException(status_code=404, detail="Order not found on Shopify")
+
+        ordine_salvato = process_and_save_order(orders[0])
+
+        return {
+            "status": "success",
+            "message": f"Ordine {name} trovato e importato correttamente.",
+            "order": ordine_salvato
+        }
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
