@@ -140,7 +140,19 @@ def get_documento_dettaglio(documento_id: int):
         
         # Recupero righe documento
         righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").select("*").eq("documento_id", documento_id).execute()
-        documento["righe"] = righe_resp.data if righe_resp.data else []
+        righe = righe_resp.data if righe_resp.data else []
+        
+        # Recupero automatico dei dati dell'articolo per ogni riga (JOIN logico)
+        for riga in righe:
+            articolo_id = riga.get("articolo_id")
+            articolo_data = None
+            if articolo_id:
+                art_resp = supabase.schema("gestionale_divise").table("articoli").select("*").eq("id", articolo_id).execute()
+                if art_resp.data:
+                    articolo_data = art_resp.data[0]
+            riga["articolo"] = articolo_data
+
+        documento["righe"] = righe
         
         # Recupero automatico dei dati del cliente associato (JOIN logico)
         cliente_id = documento.get("cliente_id")
