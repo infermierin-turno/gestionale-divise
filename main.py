@@ -180,12 +180,12 @@ def crea_documento_da_ordine(id_ordine: int):
         
         ordine = ordine_resp.data[0]
         
-        # Preparazione testata del documento basata sui dati dell'ordine Shopify
         totale_ordine = float(ordine.get("totale_ordine", 0.0))
         totale_prodotti = float(ordine.get("totale_prodotti", 0.0))
         totale_spedizione = float(ordine.get("totale_spedizione", 0.0))
         imposta_stimata = round(totale_ordine - totale_prodotti - totale_spedizione, 2)
 
+        # Inserimento completo con tutti i campi fiscali ora presenti su Supabase
         testata_documento = {
             "azienda_id": ordine.get("azienda_id", 1),
             "tipo_documento": "fattura",
