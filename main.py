@@ -180,10 +180,33 @@ def crea_documento_da_ordine(id_ordine: int):
         
         ordine = ordine_resp.data[0]
         
+        # Preparazione testata del documento basata sui dati dell'ordine Shopify
+        totale_ordine = float(ordine.get("totale_ordine", 0.0))
+        totale_prodotti = float(ordine.get("totale_prodotti", 0.0))
+        totale_spedizione = float(ordine.get("totale_spedizione", 0.0))
+        imposta_stimata = round(totale_ordine - totale_prodotti - totale_spedizione, 2)
+
+        testata_documento = {
+            "azienda_id": ordine.get("azienda_id", 1),
+            "tipo_documento": "fattura",
+            "totale_imponibile": totale_prodotti,
+            "totale_imposta": imposta_stimata if imposta_stimata >= 0 else 0.0,
+            "totale_documento": totale_ordine,
+            "stato": "emesso"
+        }
+
+        doc_resp = supabase.schema("gestionale_divise").table("documenti").insert(testata_documento).execute()
+        if not doc_resp.data:
+            raise HTTPException(status_code=500, detail="Errore durante l'inserimento della fattura nel database.")
+        
+        nuovo_documento = doc_resp.data[0]
+        documento_id = nuovo_documento.get("id")
+
         return {
             "status": "success",
-            "message": f"Ordine ID {id_ordine} convertito in documento con successo!",
-            "ordine": ordine
+            "message": f"Ordine ID {id_ordine} convertito e salvato in fattura con successo!",
+            "documento_id": documento_id,
+            "documento": nuovo_documento
         }
     except HTTPException as he:
         raise he
