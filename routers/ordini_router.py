@@ -12,8 +12,6 @@ SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
-@app_placeholder_route = None # Solo per struttura
-
 @router.post("/sync-orders")
 def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
     try:
@@ -22,7 +20,6 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
         if not SHOPIFY_SHOP or not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
             raise HTTPException(status_code=500, detail="Credenziali Shopify mancanti nelle variabili d'ambiente.")
 
-        # Autenticazione OAuth Shopify (Client Credentials)
         auth_url = f"https://{SHOPIFY_SHOP}/admin/oauth/access_token"
         auth_payload = {
             "client_id": SHOPIFY_CLIENT_ID,
@@ -38,7 +35,6 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
         if not access_token:
             raise HTTPException(status_code=500, detail="Impossibile estrarre l'access_token di Shopify.")
 
-        # Chiamata alle API ordini di Shopify
         url = f"https://{SHOPIFY_SHOP}/admin/api/{SHOPIFY_API_VERSION}/orders.json?status=any&limit=250"
         headers = {
             "X-Shopify-Access-Token": access_token,
@@ -91,7 +87,6 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                     sincronizzati += len(batch_dedup)
                     all_records = []
 
-            # Paginazione Link header di Shopify
             link_header = response.headers.get("Link", "")
             url = None
             if 'rel="next"' in link_header:
