@@ -3,17 +3,18 @@ import requests
 from fastapi import FastAPI, HTTPException
 from typing import Dict, Any
 from database import supabase
-from routers import clienti, ordini_router
+from routers import clienti, ordini_router, dipendenti
 
 app = FastAPI(
     title="Gestionale Divise API",
     description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
-    version="1.2.3"
+    version="1.2.4"
 )
 
-# Inclusione dei router separati esistenti
+# Inclusione dei router separati esistenti e del nuovo router dipendenti
 app.include_router(clienti.router)
 app.include_router(ordini_router.router)
+app.include_router(dipendenti.router)
 
 # Lettura delle credenziali e pulizia automatica di eventuali prefissi http:// o https:// in SHOP_URL
 raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
@@ -138,14 +139,12 @@ def get_documento_dettaglio(documento_id: int):
 @app.post("/api/documenti")
 def crea_documento(payload_data: Dict[str, Any]):
     try:
-        # Supporta sia il formato con "testata" che il formato diretto dei campi
         testata = payload_data.get("testata", payload_data)
         righe = payload_data.get("righe", [])
 
         if not testata:
             raise HTTPException(status_code=400, detail="Dati di testata del documento mancanti.")
 
-        # Pulizia dei campi per evitare chiavi non presenti nella tabella documenti
         doc_payload = {
             "azienda_id": testata.get("azienda_id", 1),
             "cliente_id": testata.get("cliente_id") if testata.get("cliente_id") else None,
