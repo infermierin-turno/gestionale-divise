@@ -54,11 +54,60 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     financial_status = ord_item.get("financial_status", "pending")
     stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
 
+    # ==========================================
+    # GESTIONE AUTOMATICA / ABBINAMENTO CLIENTE
+    # ==========================================
+    cliente_id = None
+    customer_data = ord_item.get("customer")
+    
+    if customer_data:
+        shopify_cust_id = customer_data.get("id")
+        email = customer_data.get("email")
+        nome = customer_data.get("first_name", "")
+        cognome = customer_data.get("last_name", "")
+        telefono = customer_data.get("phone", "")
+        
+        addresses = customer_data.get("addresses", [])
+        default_address = next((addr for addr in addresses if addr.get("default")), addresses[0] if addresses else {})
+        
+        ragione_sociale = default_address.get("company", "")
+        indirizzo_1 = default_address.get("address1", "")
+        indirizzo_2 = default_address.get("address2", "")
+        indirizzo_completo = f"{indirizzo_1} {indirizzo_2}".strip()
+        citta = default_address.get("city", "")
+        cap = default_address.get("zip", "")
+        provincia = default_address.get("province_code", "")
+
+        # 1. Cerchiamo se il cliente esiste già su Supabase tramite shopify_customer_id
+        existing_cust = supabase.schema("gestionale_divise").table("clienti").select("id").eq("shopify_customer_id", shopify_cust_id).execute()
+        
+        if existing_cust.data:
+            cliente_id = existing_cust.data[0].get("id")
+        else:
+            # 2. Se non esiste, lo creiamo al volo nella tabella clienti
+            new_cust_payload = {
+                "azienda_id": azienda_id,
+                "shopify_customer_id": shopify_cust_id,
+                "ragione_sociale": ragione_sociale if ragione_sociale else None,
+                "nome": nome if nome else None,
+                "cognome": cognome if cognome else None,
+                "email": email if email else None,
+                "telefono": telefono if telefono else None,
+                "indirizzo": indirizzo_completo if indirizzo_completo else None,
+                "citta": citta if citta else None,
+                "cap": cap if cap else None,
+                "provincia": provincia if provincia else None
+            }
+            ins_res = supabase.schema("gestionale_divise").table("clienti").insert(new_cust_payload).execute()
+            if ins_res.data:
+                cliente_id = ins_res.data[0].get("id")
+
     record = {
         "azienda_id": azienda_id,
         "shopify_order_id": shopify_order_id,
         "shopify_order_name": shopify_order_name,
         "canale_vendita": "Shopify",
+        "cliente_id": cliente_id,  # Associa l'ID cliente risolto o creato
         "stato_ordine": stato_ordine,
         "totale_prodotti": totale_prodotti,
         "totale_spedizione": totale_spedizione,
@@ -85,7 +134,6 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
             "Content-Type": "application/json"
         }
 
-        all_records = []
         sincronizzati = 0
 
         while url:
@@ -100,45 +148,8 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                 break
 
             for ord_item in orders:
-                try:
-                    raw_id = ord_item.get("id")
-                    shopify_order_id = int(raw_id) if raw_id is not None else None
-                except ValueError:
-                    shopify_order_id = raw_id
-
-                shopify_order_name = ord_item.get("name", "")
-                totale_ordine = float(ord_item.get("total_price", 0.0))
-                
-                totale_spedizione = 0.0
-                shipping_lines = ord_item.get("shipping_lines", [])
-                for line in shipping_lines:
-                    totale_spedizione += float(line.get("price", 0.0))
-                
-                totale_prodotti = round(totale_ordine - totale_spedizione, 2)
-                
-                financial_status = ord_item.get("financial_status", "pending")
-                stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
-
-                record = {
-                    "azienda_id": azienda_id,
-                    "shopify_order_id": shopify_order_id,
-                    "shopify_order_name": shopify_order_name,
-                    "canale_vendita": "Shopify",
-                    "stato_ordine": stato_ordine,
-                    "totale_prodotti": totale_prodotti,
-                    "totale_spedizione": totale_spedizione,
-                    "totale_ordine": totale_ordine,
-                    "created_at": ord_item.get("created_at")
-                }
-
-                all_records.append(record)
-
-                if len(all_records) >= 500:
-                    dedup_dict = {r["shopify_order_id"]: r for r in all_records}
-                    batch_dedup = list(dedup_dict.values())
-                    supabase.schema("gestionale_divise").table("ordini").upsert(batch_dedup, on_conflict="shopify_order_id").execute()
-                    sincronizzati += len(batch_dedup)
-                    all_records = []
+                process_and_save_order(ord_item, azienda_id)
+                sincronizzati += 1
 
             link_header = response.headers.get("Link", "")
             url = None
@@ -147,15 +158,9 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
                     if 'rel="next"' in part:
                         url = part.split(";")[0].strip().strip("<>")
 
-        if all_records:
-            dedup_dict = {r["shopify_order_id"]: r for r in all_records}
-            batch_dedup = list(dedup_dict.values())
-            supabase.schema("gestionale_divise").table("ordini").upsert(batch_dedup, on_conflict="shopify_order_id").execute()
-            sincronizzati += len(batch_dedup)
-
         return {
             "status": "success",
-            "message": f"Sincronizzazione ordini completata! Sincronizzati: {sincronizzati}",
+            "message": f"Sincronizzazione ordini e clienti completata! Sincronizzati: {sincronizzati}",
             "total_synced": sincronizzati
         }
     except Exception as e:
@@ -195,7 +200,7 @@ def fetch_order_by_name(name: str = Query(...)):
 
         return {
             "status": "success",
-            "message": f"Ordine {name} trovato e importato correttamente.",
+            "message": f"Ordine {name} trovato e importato correttamente con abbinamento cliente.",
             "data": result
         }
     except HTTPException as he:
