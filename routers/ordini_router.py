@@ -107,7 +107,7 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
         "shopify_order_id": shopify_order_id,
         "shopify_order_name": shopify_order_name,
         "canale_vendita": "Shopify",
-        "cliente_id": cliente_id,  # Associa l'ID cliente risolto o creato
+        "cliente_id": cliente_id,
         "stato_ordine": stato_ordine,
         "totale_prodotti": totale_prodotti,
         "totale_spedizione": totale_spedizione,
@@ -116,7 +116,65 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     }
 
     try:
+        # Upsert della testata dell'ordine su Supabase
         res = supabase.schema("gestionale_divise").table("ordini").upsert(record, on_conflict="shopify_order_id").execute()
+        
+        # Recuperiamo l'ID interno dell'ordine appena inserito/aggiornato
+        ordine_db_id = None
+        if res.data and len(res.data) > 0:
+            ordine_db_id = res.data[0].get("id")
+        else:
+            # Fallback di sicurezza: ricerchiamo l'ID tramite shopify_order_id
+            sel_ord = supabase.schema("gestionale_divise").table("ordini").select("id").eq("shopify_order_id", shopify_order_id).execute()
+            if sel_ord.data:
+                ordine_db_id = sel_ord.data[0].get("id")
+
+        # ==========================================
+        # SALVATAGGIO RIGHE ORDINE (RIGHE_ORDINE)
+        # ==========================================
+        if ordine_db_id:
+            # 1. Rimuoviamo eventuali vecchie righe per evitare duplicati in caso di aggiornamento ordine
+            supabase.schema("gestionale_divise").table("righe_ordine").delete().eq("ordine_id", ordine_db_id).execute()
+
+            line_items = ord_item.get("line_items", [])
+            for item in line_items:
+                variant_id = item.get("variant_id")
+                product_id = item.get("product_id")
+                sku = item.get("sku")
+                qta = int(item.get("quantity", 1))
+                prezzo_unitario = float(item.get("price", 0.0))
+                totale_riga = round(qta * prezzo_unitario, 2)
+
+                articolo_id = None
+
+                # Cerchiamo l'articolo nel magazzino locale tramite shopify_variant_id
+                if variant_id:
+                    art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("shopify_variant_id", variant_id).execute()
+                    if art_res.data:
+                        articolo_id = art_res.data[0].get("id")
+
+                # Se non trovato per variant_id, proviamo con shopify_product_id
+                if not articolo_id and product_id:
+                    art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("shopify_product_id", product_id).execute()
+                    if art_res.data:
+                        articolo_id = art_res.data[0].get("id")
+
+                # Se non trovato per ID, proviamo tramite SKU
+                if not articolo_id and sku:
+                    art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("sku", sku).execute()
+                    if art_res.data:
+                        articolo_id = art_res.data[0].get("id")
+
+                # Inseriamo la riga nella tabella righe_ordine
+                riga_payload = {
+                    "ordine_id": ordine_db_id,
+                    "articolo_id": articolo_id,  # Sarà associato se presente in magazzino, altrimenti null
+                    "quantita": qta,
+                    "prezzo_unitario": prezzo_unitario,
+                    "totale_riga": totale_riga
+                }
+                supabase.schema("gestionale_divise").table("righe_ordine").insert(riga_payload).execute()
+
         return {"record": record, "response": str(res)}
     except Exception as db_err:
         print(f"ERRORE SUPABASE: {str(db_err)}")
@@ -160,7 +218,7 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
 
         return {
             "status": "success",
-            "message": f"Sincronizzazione ordini e clienti completata! Sincronizzati: {sincronizzati}",
+            "message": f"Sincronizzazione ordini, clienti e righe completata! Sincronizzati: {sincronizzati}",
             "total_synced": sincronizzati
         }
     except Exception as e:
@@ -200,7 +258,7 @@ def fetch_order_by_name(name: str = Query(...)):
 
         return {
             "status": "success",
-            "message": f"Ordine {name} trovato e importato correttamente con abbinamento cliente.",
+            "message": f"Ordine {name} trovato e importato correttamente con righe e abbinamento cliente.",
             "data": result
         }
     except HTTPException as he:
