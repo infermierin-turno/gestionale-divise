@@ -78,13 +78,11 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
         cap = default_address.get("zip", "")
         provincia = default_address.get("province_code", "")
 
-        # 1. Cerchiamo se il cliente esiste già su Supabase tramite shopify_customer_id
         existing_cust = supabase.schema("gestionale_divise").table("clienti").select("id").eq("shopify_customer_id", shopify_cust_id).execute()
         
         if existing_cust.data:
             cliente_id = existing_cust.data[0].get("id")
         else:
-            # 2. Se non esiste, lo creiamo al volo nella tabella clienti
             new_cust_payload = {
                 "azienda_id": azienda_id,
                 "shopify_customer_id": shopify_cust_id,
@@ -116,24 +114,17 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     }
 
     try:
-        # Upsert della testata dell'ordine su Supabase
         res = supabase.schema("gestionale_divise").table("ordini").upsert(record, on_conflict="shopify_order_id").execute()
         
-        # Recuperiamo l'ID interno dell'ordine appena inserito/aggiornato
         ordine_db_id = None
         if res.data and len(res.data) > 0:
             ordine_db_id = res.data[0].get("id")
         else:
-            # Fallback di sicurezza: ricerchiamo l'ID tramite shopify_order_id
             sel_ord = supabase.schema("gestionale_divise").table("ordini").select("id").eq("shopify_order_id", shopify_order_id).execute()
             if sel_ord.data:
                 ordine_db_id = sel_ord.data[0].get("id")
 
-        # ==========================================
-        # SALVATAGGIO RIGHE ORDINE (RIGHE_ORDINE)
-        # ==========================================
         if ordine_db_id:
-            # 1. Rimuoviamo eventuali vecchie righe per evitare duplicati in caso di aggiornamento ordine
             supabase.schema("gestionale_divise").table("righe_ordine").delete().eq("ordine_id", ordine_db_id).execute()
 
             line_items = ord_item.get("line_items", [])
@@ -147,28 +138,24 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
 
                 articolo_id = None
 
-                # Cerchiamo l'articolo nel magazzino locale tramite shopify_variant_id
                 if variant_id:
                     art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("shopify_variant_id", variant_id).execute()
                     if art_res.data:
                         articolo_id = art_res.data[0].get("id")
 
-                # Se non trovato per variant_id, proviamo con shopify_product_id
                 if not articolo_id and product_id:
                     art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("shopify_product_id", product_id).execute()
                     if art_res.data:
                         articolo_id = art_res.data[0].get("id")
 
-                # Se non trovato per ID, proviamo tramite SKU
                 if not articolo_id and sku:
                     art_res = supabase.schema("gestionale_divise").table("articoli").select("id").eq("sku", sku).execute()
                     if art_res.data:
                         articolo_id = art_res.data[0].get("id")
 
-                # Inseriamo la riga nella tabella righe_ordine
                 riga_payload = {
                     "ordine_id": ordine_db_id,
-                    "articolo_id": articolo_id,  # Sarà associato se presente in magazzino, altrimenti null
+                    "articolo_id": articolo_id,
                     "quantita": qta,
                     "prezzo_unitario": prezzo_unitario,
                     "totale_riga": totale_riga
@@ -273,4 +260,57 @@ def get_ordini_shopify():
         response = supabase.schema("gestionale_divise").table("ordini").select("*").order("created_at", desc=True).execute()
         return response.data if response.data else []
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# =========================================================================
+# NUOVA ROTTA AGGIUNTA PER RESTITUIRE L'ORDINE SINGOLO CON RIGHE E CLIENTE
+# =========================================================================
+@router.get("/ordini/{ordine_id}")
+def get_singolo_ordine(ordine_id: int):
+    try:
+        # 1. Recupera la testata dell'ordine
+        ord_res = supabase.schema("gestionale_divise").table("ordini").select("*").eq("id", ordine_id).execute()
+        if not ord_res.data:
+            # Prova a cercarlo per shopify_order_id se non trovato per id interno
+            ord_res = supabase.schema("gestionale_divise").table("ordini").select("*").eq("shopify_order_id", ordine_id).execute()
+            if not ord_res.data:
+                raise HTTPException(status_code=404, detail="Ordine non trovato")
+
+        ordine = ord_res.data[0]
+        db_id = ordine.get("id")
+
+        # 2. Recupera le righe associate dalla tabella righe_ordine
+        righe_res = supabase.schema("gestionale_divise").table("righe_ordine").select("*, articoli(nome, sku)").eq("ordine_id", db_id).execute()
+        righe = righe_res.data if righe_res.data else []
+
+        # Arricchiamo le righe con il nome articolo se disponibile dalla join
+        righe_formattate = []
+        for r in righe:
+            articolo_info = r.get("articoli") or {}
+            righe_formattate.append({
+                "id": r.get("id"),
+                "articolo_id": r.get("articolo_id"),
+                "quantita": r.get("quantita"),
+                "prezzo_unitario": r.get("prezzo_unitario"),
+                "totale_riga": r.get("totale_riga"),
+                "nome_articolo": articolo_info.get("nome", "Articolo Sconosciuto"),
+                "sku": articolo_info.get("sku", "")
+            })
+
+        # 3. Recupera il cliente associato (se presente)
+        cliente_id = ordine.get("cliente_id")
+        cliente_data = None
+        if cliente_id:
+            cli_res = supabase.schema("gestionale_divise").table("clienti").select("*").eq("id", cliente_id).execute()
+            if cli_res.data:
+                cliente_data = cli_res.data[0]
+
+        ordine["righe"] = righe_formattate
+        ordine["cliente"] = cliente_data
+
+        return {"status": "success", "ordine": ordine}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print("ERRORE GET SINGOLO ORDINE:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
