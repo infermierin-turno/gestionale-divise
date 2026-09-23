@@ -8,10 +8,10 @@ from routers import clienti, ordini_router
 app = FastAPI(
     title="Gestionale Divise API",
     description="Backend multi-canale per la gestione ordini, magazzino e clienti - divisedivise.it",
-    version="1.2.2"
+    version="1.2.3"
 )
 
-# Inclusione dei router separati
+# Inclusione dei router separati esistenti
 app.include_router(clienti.router)
 app.include_router(ordini_router.router)
 
@@ -138,15 +138,29 @@ def get_documento_dettaglio(documento_id: int):
 @app.post("/api/documenti")
 def crea_documento(payload_data: Dict[str, Any]):
     try:
-        testata = payload_data.get("testata", {})
+        # Supporta sia il formato con "testata" che il formato diretto dei campi
+        testata = payload_data.get("testata", payload_data)
         righe = payload_data.get("righe", [])
 
         if not testata:
             raise HTTPException(status_code=400, detail="Dati di testata del documento mancanti.")
 
-        doc_resp = supabase.schema("gestionale_divise").table("documenti").insert(testata).execute()
+        # Pulizia dei campi per evitare chiavi non presenti nella tabella documenti
+        doc_payload = {
+            "azienda_id": testata.get("azienda_id", 1),
+            "cliente_id": testata.get("cliente_id") if testata.get("cliente_id") else None,
+            "ordine_id": testata.get("ordine_id") if testata.get("ordine_id") else None,
+            "tipo_documento": testata.get("tipo_documento", "fattura"),
+            "numero_documento": testata.get("numero_documento"),
+            "totale_imponibile": float(testata.get("totale_imponibile", 0.0)),
+            "totale_imposta": float(testata.get("totale_imposta", 0.0)),
+            "totale_documento": float(testata.get("totale_documento", 0.0)),
+            "stato": testata.get("stato", "emesso")
+        }
+
+        doc_resp = supabase.schema("gestionale_divise").table("documenti").insert(doc_payload).execute()
         if not doc_resp.data:
-            raise HTTPException(status_code=500, detail="Errore durante la creazione del documento.")
+            raise HTTPException(status_code=500, detail="Errore durante la creazione del documento su Supabase.")
         
         nuovo_documento = doc_resp.data[0]
         documento_id = nuovo_documento.get("id")
@@ -154,17 +168,26 @@ def crea_documento(payload_data: Dict[str, Any]):
         righe_inserite = []
         if righe and documento_id:
             for riga in righe:
-                riga["documento_id"] = documento_id
-            
-            righe_resp = supabase.schema("gestionale_divise").table("documenti_righe").insert(righe).execute()
-            righe_inserite = righe_resp.data if righe_resp.data else []
+                qta = int(riga.get("quantita", 1))
+                prz = float(riga.get("prezzo_unitario", riga.get("prezzo", 0.0)))
+                riga_doc_payload = {
+                    "documento_id": documento_id,
+                    "articolo_id": riga.get("articolo_id") if riga.get("articolo_id") else None,
+                    "quantita": qta,
+                    "prezzo_unitario": prz,
+                    "totale_riga": round(qta * prz, 2)
+                }
+                riga_res = supabase.schema("gestionale_divise").table("documenti_righe").insert(riga_doc_payload).execute()
+                if riga_res.data:
+                    righe_inserite.extend(riga_res.data)
 
         nuovo_documento["righe"] = righe_inserite
 
         return {
             "status": "success",
             "message": "Documento creato con successo!",
-            "documento": nuovo_documento
+            "documento": nuovo_documento,
+            "id": documento_id
         }
     except HTTPException as he:
         raise he
@@ -185,9 +208,10 @@ def crea_documento_da_ordine(id_ordine: int):
         totale_spedizione = float(ordine.get("totale_spedizione", 0.0))
         imposta_stimata = round(totale_ordine - totale_prodotti - totale_spedizione, 2)
 
-        # Inserimento completo con tutti i campi fiscali ora presenti su Supabase
         testata_documento = {
             "azienda_id": ordine.get("azienda_id", 1),
+            "cliente_id": ordine.get("cliente_id"),
+            "ordine_id": id_ordine,
             "tipo_documento": "fattura",
             "totale_imponibile": totale_prodotti,
             "totale_imposta": imposta_stimata if imposta_stimata >= 0 else 0.0,
