@@ -259,6 +259,122 @@ def get_ordini_shopify():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/ordini")
+def crea_ordine_manuale(payload: Dict[str, Any]):
+    try:
+        azienda_id = payload.get("azienda_id", 1)
+        cliente_id = payload.get("cliente_id")
+        stato_ordine = payload.get("stato_ordine", "nuovo")
+        totale_ordine = float(payload.get("totale_ordine", 0.0))
+        totale_prodotti = float(payload.get("totale_prodotti", 0.0))
+        note = payload.get("note_personalizzazione", "")
+        righe = payload.get("righe", [])
+
+        ordine_payload = {
+            "azienda_id": azienda_id,
+            "cliente_id": int(cliente_id) if cliente_id else None,
+            "canale_vendita": "Manuale",
+            "stato_ordine": stato_ordine,
+            "totale_prodotti": totale_prodotti,
+            "totale_ordine": totale_ordine,
+            "note_personalizzazione": note
+        }
+
+        ord_res = supabase.schema("gestionale_divise").table("ordini").insert(ordine_payload).execute()
+        if not ord_res.data:
+            raise HTTPException(status_code=500, detail="Errore durante l'inserimento dell'ordine su Supabase.")
+
+        nuovo_ordine = ord_res.data[0]
+        ordine_db_id = nuovo_ordine.get("id")
+
+        righe_inserite = []
+        for riga in righe:
+            articolo_id = riga.get("articolo_id")
+            qta = int(riga.get("quantita", 1))
+            prezzo_unitario = float(riga.get("prezzo_unitario", 0.0))
+            totale_riga = round(qta * prezzo_unitario, 2)
+
+            riga_payload = {
+                "ordine_id": ordine_db_id,
+                "articolo_id": int(articolo_id) if articolo_id else None,
+                "quantita": qta,
+                "prezzo_unitario": prezzo_unitario,
+                "totale_riga": totale_riga
+            }
+            riga_res = supabase.schema("gestionale_divise").table("righe_ordine").insert(riga_payload).execute()
+            if riga_res.data:
+                righe_inserite.extend(riga_res.data)
+
+        nuovo_ordine["righe"] = righe_inserite
+
+        return {
+            "status": "success",
+            "message": "Ordine creato con successo!",
+            "ordine": nuovo_ordine
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print("ERRORE CREAZIONE ORDINE:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/ordini/{ordine_id}")
+def aggiorna_ordine(ordine_id: int, payload: Dict[str, Any]):
+    try:
+        cliente_id = payload.get("cliente_id")
+        stato_ordine = payload.get("stato_ordine", "nuovo")
+        totale_ordine = float(payload.get("totale_ordine", 0.0))
+        totale_prodotti = float(payload.get("totale_prodotti", 0.0))
+        note = payload.get("note_personalizzazione", "")
+        righe = payload.get("righe", [])
+
+        update_payload = {
+            "cliente_id": int(cliente_id) if cliente_id else None,
+            "stato_ordine": stato_ordine,
+            "totale_prodotti": totale_prodotti,
+            "totale_ordine": totale_ordine,
+            "note_personalizzazione": note
+        }
+
+        up_res = supabase.schema("gestionale_divise").table("ordini").update(update_payload).eq("id", ordine_id).execute()
+        if not up_res.data:
+            raise HTTPException(status_code=404, detail="Ordine non trovato o errore durante l'aggiornamento.")
+
+        # Aggiorna le righe: rimuove le vecchie e inserisce le nuove
+        supabase.schema("gestionale_divise").table("righe_ordine").delete().eq("ordine_id", ordine_id).execute()
+
+        righe_inserite = []
+        for riga in righe:
+            articolo_id = riga.get("articolo_id")
+            qta = int(riga.get("quantita", 1))
+            prezzo_unitario = float(riga.get("prezzo_unitario", 0.0))
+            totale_riga = round(qta * prezzo_unitario, 2)
+
+            riga_payload = {
+                "ordine_id": ordine_id,
+                "articolo_id": int(articolo_id) if articolo_id else None,
+                "quantita": qta,
+                "prezzo_unitario": prezzo_unitario,
+                "totale_riga": totale_riga
+            }
+            riga_res = supabase.schema("gestionale_divise").table("righe_ordine").insert(riga_payload).execute()
+            if riga_res.data:
+                righe_inserite.extend(riga_res.data)
+
+        ordine_aggiornato = up_res.data[0]
+        ordine_aggiornato["righe"] = righe_inserite
+
+        return {
+            "status": "success",
+            "message": "Ordine aggiornato con successo!",
+            "ordine": ordine_aggiornato
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print("ERRORE AGGIORNAMENTO ORDINE:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/ordini/{ordine_id}")
 def get_singolo_ordine(ordine_id: int):
     try:
@@ -307,7 +423,6 @@ def get_singolo_ordine(ordine_id: int):
 @router.post("/documenti")
 def crea_documento(payload: Dict[str, Any]):
     try:
-        # Supporta sia il payload con "testata" che diretto
         testata = payload.get("testata", payload)
         
         azienda_id = testata.get("azienda_id", 1)
