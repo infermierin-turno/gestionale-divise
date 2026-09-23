@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Dict, Any
 from database import supabase
 
-router = APIRouter(prefix="/api/shopify", tags=["Shopify Orders"])
+router = APIRouter(prefix="/api", tags=["Gestionale API"])
 
 raw_shop_url = os.getenv("SHOP_URL") or os.getenv("SHOPIFY_SHOP", "")
 SHOPIFY_SHOP = raw_shop_url.replace("https://", "").replace("http://", "").strip("/")
@@ -54,9 +54,6 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
     financial_status = ord_item.get("financial_status", "pending")
     stato_ordine = "pagato" if financial_status == "paid" else "nuovo"
 
-    # ==========================================
-    # GESTIONE AUTOMATICA / ABBINAMENTO CLIENTE
-    # ==========================================
     cliente_id = None
     customer_data = ord_item.get("customer")
     
@@ -167,7 +164,7 @@ def process_and_save_order(ord_item: dict, azienda_id: int = 1):
         print(f"ERRORE SUPABASE: {str(db_err)}")
         raise HTTPException(status_code=500, detail=f"Errore scrittura Supabase: {str(db_err)}")
 
-@router.post("/sync-orders")
+@router.post("/shopify/sync-orders")
 def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
     try:
         azienda_id = payload_data.get("azienda_id", 1)
@@ -212,7 +209,7 @@ def sync_shopify_orders(payload_data: Dict[str, Any] = {}):
         print(f"ERRORE SYNC: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/fetch-order-by-name")
+@router.post("/shopify/fetch-order-by-name")
 def fetch_order_by_name(name: str = Query(...)):
     try:
         access_token = get_shopify_access_token()
@@ -310,15 +307,18 @@ def get_singolo_ordine(ordine_id: int):
 @router.post("/documenti")
 def crea_documento(payload: Dict[str, Any]):
     try:
-        azienda_id = payload.get("azienda_id", 1)
-        cliente_id = payload.get("cliente_id")
-        ordine_id = payload.get("ordine_id")
-        tipo_documento = payload.get("tipo_documento", "fattura")
-        numero_documento = payload.get("numero_documento")
-        totale_imponibile = float(payload.get("totale_imponibile", 0.0))
-        totale_imposta = float(payload.get("totale_imposta", 0.0))
-        totale_documento = float(payload.get("totale_documento", 0.0))
-        stato = payload.get("stato", "emesso")
+        # Supporta sia il payload con "testata" che diretto
+        testata = payload.get("testata", payload)
+        
+        azienda_id = testata.get("azienda_id", 1)
+        cliente_id = testata.get("cliente_id")
+        ordine_id = testata.get("ordine_id")
+        tipo_documento = testata.get("tipo_documento", "fattura")
+        numero_documento = testata.get("numero_documento")
+        totale_imponibile = float(testata.get("totale_imponibile", 0.0))
+        totale_imposta = float(testata.get("totale_imposta", 0.0))
+        totale_documento = float(testata.get("totale_documento", 0.0))
+        stato = testata.get("stato", "emesso")
         righe = payload.get("righe", [])
 
         doc_payload = {
@@ -358,7 +358,8 @@ def crea_documento(payload: Dict[str, Any]):
         return {
             "status": "success",
             "message": "Documento e righe salvati con successo!",
-            "documento_id": documento_id
+            "documento_id": documento_id,
+            "id": documento_id
         }
 
     except HTTPException as he:
