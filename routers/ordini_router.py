@@ -262,16 +262,11 @@ def get_ordini_shopify():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# =========================================================================
-# NUOVA ROTTA AGGIUNTA PER RESTITUIRE L'ORDINE SINGOLO CON RIGHE E CLIENTE
-# =========================================================================
 @router.get("/ordini/{ordine_id}")
 def get_singolo_ordine(ordine_id: int):
     try:
-        # 1. Recupera la testata dell'ordine
         ord_res = supabase.schema("gestionale_divise").table("ordini").select("*").eq("id", ordine_id).execute()
         if not ord_res.data:
-            # Prova a cercarlo per shopify_order_id se non trovato per id interno
             ord_res = supabase.schema("gestionale_divise").table("ordini").select("*").eq("shopify_order_id", ordine_id).execute()
             if not ord_res.data:
                 raise HTTPException(status_code=404, detail="Ordine non trovato")
@@ -279,11 +274,9 @@ def get_singolo_ordine(ordine_id: int):
         ordine = ord_res.data[0]
         db_id = ordine.get("id")
 
-        # 2. Recupera le righe associate dalla tabella righe_ordine
         righe_res = supabase.schema("gestionale_divise").table("righe_ordine").select("*, articoli(nome, sku)").eq("ordine_id", db_id).execute()
         righe = righe_res.data if righe_res.data else []
 
-        # Arricchiamo le righe con il nome articolo se disponibile dalla join
         righe_formattate = []
         for r in righe:
             articolo_info = r.get("articoli") or {}
@@ -297,7 +290,6 @@ def get_singolo_ordine(ordine_id: int):
                 "sku": articolo_info.get("sku", "")
             })
 
-        # 3. Recupera il cliente associato (se presente)
         cliente_id = ordine.get("cliente_id")
         cliente_data = None
         if cliente_id:
@@ -314,3 +306,63 @@ def get_singolo_ordine(ordine_id: int):
     except Exception as e:
         print("ERRORE GET SINGOLO ORDINE:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/documenti")
+def crea_documento(payload: Dict[str, Any]):
+    try:
+        azienda_id = payload.get("azienda_id", 1)
+        cliente_id = payload.get("cliente_id")
+        ordine_id = payload.get("ordine_id")
+        tipo_documento = payload.get("tipo_documento", "fattura")
+        numero_documento = payload.get("numero_documento")
+        totale_imponibile = float(payload.get("totale_imponibile", 0.0))
+        totale_imposta = float(payload.get("totale_imposta", 0.0))
+        totale_documento = float(payload.get("totale_documento", 0.0))
+        stato = payload.get("stato", "emesso")
+        righe = payload.get("righe", [])
+
+        doc_payload = {
+            "azienda_id": azienda_id,
+            "cliente_id": cliente_id if cliente_id else None,
+            "ordine_id": ordine_id if ordine_id else None,
+            "tipo_documento": tipo_documento,
+            "numero_documento": numero_documento,
+            "totale_imponibile": totale_imponibile,
+            "totale_imposta": totale_imposta,
+            "totale_documento": totale_documento,
+            "stato": stato
+        }
+
+        doc_res = supabase.schema("gestionale_divise").table("documenti").insert(doc_payload).execute()
+        
+        if not doc_res.data:
+            raise HTTPException(status_code=500, detail="Errore durante l'inserimento della testata documento su Supabase.")
+
+        documento_id = doc_res.data[0].get("id")
+
+        for riga in righe:
+            articolo_id = riga.get("articolo_id")
+            quantita = int(riga.get("quantita", 1))
+            prezzo_unitario = float(riga.get("prezzo_unitario", 0.0))
+            totale_riga = round(quantita * prezzo_unitario, 2)
+
+            riga_doc_payload = {
+                "documento_id": documento_id,
+                "articolo_id": articolo_id if articolo_id else None,
+                "quantita": quantita,
+                "prezzo_unitario": prezzo_unitario,
+                "totale_riga": totale_riga
+            }
+            supabase.schema("gestionale_divise").table("documenti_righe").insert(riga_doc_payload).execute()
+
+        return {
+            "status": "success",
+            "message": "Documento e righe salvati con successo!",
+            "documento_id": documento_id
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print("ERRORE SALVATAGGIO DOCUMENTO:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio documento: {str(e)}")
